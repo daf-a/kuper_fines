@@ -3,26 +3,19 @@ import threading
 import time
 import json
 import logging
-import sys
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
-
-# Для Telegram
 import telebot
 from telebot import types as tg_types
 
-# Для MAX
+# Для MAX — используем правильный импорт
 try:
     from maxbot import Client as MaxClient
 except ImportError:
     MaxClient = None
 
 # Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
@@ -37,15 +30,12 @@ if not TELEGRAM_TOKEN and not MAX_TOKEN:
 logger.info(f"TELEGRAM_TOKEN: {'установлен' if TELEGRAM_TOKEN else 'не задан'}")
 logger.info(f"MAX_TOKEN: {'установлен' if MAX_TOKEN else 'не задан'}")
 
-# Создаём ботов
+# Создаём ботов (с повторными попытками при ошибках)
 tg_bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 max_bot = MaxClient(MAX_TOKEN) if (MAX_TOKEN and MaxClient) else None
 
-logger.info(f"tg_bot создан: {tg_bot is not None}")
-logger.info(f"max_bot создан: {max_bot is not None}")
-
 # ---------------------------------------------------------------------
-# ВЕБ-СЕРВЕР ДЛЯ RENDER
+# ВЕБ-СЕРВЕР ДЛЯ RENDER (health check)
 # ---------------------------------------------------------------------
 app = Flask(__name__)
 
@@ -79,33 +69,39 @@ STATUSES = {
 }
 
 # ---------------------------------------------------------------------
-# РАБОТА С ФАЙЛАМИ
+# РАБОТА С ФАЙЛАМИ (с защитой от конкурентного доступа)
 # ---------------------------------------------------------------------
+file_lock = threading.Lock()
+
 def load_requests():
-    if os.path.exists(REQUESTS_FILE):
-        with open(REQUESTS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return []
+    with file_lock:
+        if os.path.exists(REQUESTS_FILE):
+            with open(REQUESTS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []
 
 def save_requests(requests):
-    with open(REQUESTS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(requests, f, ensure_ascii=False, indent=2)
+    with file_lock:
+        with open(REQUESTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(requests, f, ensure_ascii=False, indent=2)
 
 def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    default_settings = {
-        'admin_ids': DEFAULT_ADMINS,
-        'reminder_time': '09:00',
-        'points': ['Ашан, Химки', 'Metro, Черная Грязь']
-    }
-    save_settings(default_settings)
-    return default_settings
+    with file_lock:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        default_settings = {
+            'admin_ids': DEFAULT_ADMINS,
+            'reminder_time': '09:00',
+            'points': ['Ашан, Химки', 'Metro, Черная Грязь']
+        }
+        save_settings(default_settings)
+        return default_settings
 
 def save_settings(settings):
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
+    with file_lock:
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
 
 # ---------------------------------------------------------------------
 # АДМИНЫ ПО УМОЛЧАНИЮ
@@ -230,32 +226,10 @@ def show_main_menu(chat_id, user_id):
         btn5 = tg_types.InlineKeyboardButton("🔧 Админ-панель", callback_data="menu_admin")
         markup.row(btn5)
     send_message(chat_id, "👋 Привет! Выберите действие:", reply_markup=markup)
-
-# ---------------------------------------------------------------------
-# ОБРАБОТЧИКИ CALLBACK
-# ---------------------------------------------------------------------
-def handle_menu_callback(call):
-    chat_id = call.message.chat.id
-    data = call.data
-    if data == "menu_new":
-        show_point_selection(chat_id)
-    elif data == "menu_my":
-        show_my_requests(chat_id)
-    elif data == "menu_help":
-        send_message(chat_id, "📖 Помощь: ...")
-    elif data == "menu_example":
-        show_example_request(chat_id)
-    elif data == "menu_admin":
-        if is_admin(chat_id):
-            admin_panel(chat_id)
-        else:
-            send_message(chat_id, "⛔ Нет доступа.")
-    answer_callback(call)
     
 # ---------------------------------------------------------------------
 # ВСЕ ОБРАБОТЧИКИ (ЗАЯВКИ, АДМИНКА, СТАТУСЫ)
 # ---------------------------------------------------------------------
-
 def show_point_selection(chat_id):
     settings = load_settings()
     points = settings.get('points', ['Точка А', 'Точка Б'])
@@ -300,12 +274,11 @@ def process_request_creation(chat_id, text):
                 reply_markup=markup
             )
         except ValueError:
-            send_message(chat_id, "❌ Неверный формат! Используйте ДД.ММ.ГГГГ (например, 15.05.2026)")
+            send_message(chat_id, "❌ Неверный формат! Используйте ДД.ММ.ГГГГ")
 
 def handle_photo_message(message):
     chat_id = message.chat.id
     if chat_id in user_data and user_data[chat_id].get('step') == 'photo':
-        # Получаем file_id
         if hasattr(message, 'photo'):
             file_id = message.photo[-1].file_id
         else:
@@ -313,11 +286,9 @@ def handle_photo_message(message):
         if file_id:
             user_data[chat_id]['photo_id'] = file_id
             user_data[chat_id]['step'] = 'date'
-            send_message(chat_id, "📅 Введите дату выписки штрафа в формате ДД.ММ.ГГГГ:")
+            send_message(chat_id, "📅 Введите дату в формате ДД.ММ.ГГГГ:")
         else:
-            send_message(chat_id, "❌ Не удалось получить фото. Попробуйте ещё раз.")
-    else:
-        send_message(chat_id, "❌ Сейчас не требуется фото. Нажмите 'Подать заявку'.")
+            send_message(chat_id, "❌ Не удалось получить фото.")
 
 def handle_confirm_callback(call):
     chat_id = call.message.chat.id
@@ -592,6 +563,7 @@ def change_status(call):
     if not req:
         answer_callback(call, "❌ Не найдена", True)
         return
+    # Проверки
     if action == 'guilty' and req['status'] != 'work':
         answer_callback(call, "❌ Сначала возьмите в работу", True)
         return
@@ -605,12 +577,14 @@ def change_status(call):
         answer_callback(call, "❌ Заявка не на согласовании", True)
         return
 
+    # Если это not_guilty — запрашиваем номер штрафа
     if action == 'not_guilty':
         user_data[chat_id] = {'action': 'add_penalty_number', 'req_id': req_id}
         send_message(chat_id, f"✍️ Введите НОМЕР ШТРАФА для заявки №{req_id} (только для админов):")
-        answer_callback(call)
+        answer_callback(call)  # <-- ВАЖНО: закрываем callback здесь
         return
 
+    # Остальные статусы
     status_map = {'guilty': 'guilty', 'approved': 'approved', 'rejected': 'rejected'}
     new_status = status_map[action]
     admin_name = get_admin_name(chat_id)
@@ -620,9 +594,6 @@ def change_status(call):
         'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'comment': f'Статус изменил: {admin_name}'
     })
-    if new_status == 'not_guilty':
-        req['reminder_date'] = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-        req['reminder_sent'] = False
     save_requests(requests)
     status_info = STATUSES[new_status]
     send_message(req['user_id'], f"📊 Статус заявки №{req_id} изменён на {status_info['emoji']} {status_info['name']}")
@@ -658,7 +629,9 @@ def add_penalty_number(message):
     send_message(chat_id, f"✅ Номер штрафа сохранён! Заявка №{req_id} отправлена на согласование.")
     send_message(req['user_id'], f"📊 Ваша заявка №{req_id} отправлена на согласование! Статус: 🟡 Не виновен")
     del user_data[chat_id]
-
+# ---------------------------------------------------------------------
+# ОСТАЛЬНЫЕ ФУНКЦИИ (appeal, comment, history, remind, reminders, stats, settings, admin_back)
+# ---------------------------------------------------------------------
 def add_appeal(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -857,7 +830,6 @@ def handle_text_message(message):
         else:
             process_request_creation(chat_id, message.text)
     else:
-        # Если не в процессе, показываем главное меню
         show_main_menu(chat_id, chat_id)
 
 def handle_photo_message_global(message):
@@ -867,13 +839,10 @@ def handle_photo_message_global(message):
 # КОМАНДА /add_admin
 # ---------------------------------------------------------------------
 def handle_add_admin_command(message, user_id):
-    # Проверка: если пользователь не админ и в списке уже есть другие админы, запрещаем.
-    # Если админов ещё нет, разрешаем добавить первого.
     settings = load_settings()
     if is_admin(user_id):
-        pass  # разрешено
+        pass
     elif len(settings['admin_ids']) == 0:
-        # админов нет, разрешаем
         pass
     else:
         send_message(message.chat.id, "⛔ У вас нет прав для добавления админов.")
@@ -889,13 +858,11 @@ def handle_add_admin_command(message, user_id):
         new_id = int(parts[1])
         points = [p.strip() for p in parts[2].split(',')]
         name = parts[3] if len(parts) > 3 else f"Админ {new_id}"
-        # Проверяем, что точки существуют
         available_points = settings.get('points', [])
         for p in points:
             if p not in available_points:
                 send_message(message.chat.id, f"❌ Точка '{p}' не найдена. Доступные: {', '.join(available_points)}")
                 return
-        # Проверяем, есть ли уже такой админ
         for adm in settings['admin_ids']:
             if adm['id'] == new_id:
                 adm['points'] = points
@@ -903,11 +870,9 @@ def handle_add_admin_command(message, user_id):
                 save_settings(settings)
                 send_message(message.chat.id, f"✅ Админ {new_id} обновлён.")
                 return
-        # Добавляем нового
         settings['admin_ids'].append({'id': new_id, 'points': points, 'name': name})
         save_settings(settings)
         send_message(message.chat.id, f"✅ Админ добавлен: {name} (ID: {new_id})")
-        # Уведомляем нового админа
         try:
             send_message(new_id, f"👑 Вы назначены администратором!\nТочки: {', '.join(points)}")
         except:
@@ -918,16 +883,16 @@ def handle_add_admin_command(message, user_id):
 # ---------------------------------------------------------------------
 # РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ
 # ---------------------------------------------------------------------
-if tg_bot:
-    @tg_bot.message_handler(commands=['start'])
-    def tg_start(message):
-        logger.info(f"Telegram start от {message.from_user.id}")
-        show_main_menu(message.chat.id, message.from_user.id)
+def setup_handlers():
+    if tg_bot:
+        @tg_bot.message_handler(commands=['start'])
+        def tg_start(message):
+            logger.info(f"Telegram start от {message.from_user.id}")
+            show_main_menu(message.chat.id, message.from_user.id)
 
-    @tg_bot.callback_query_handler(func=lambda call: True)
-    def tg_callback(call):
-        data = call.data
-        try:
+        @tg_bot.callback_query_handler(func=lambda call: True)
+        def tg_callback(call):
+            data = call.data
             if data.startswith('menu_'):
                 handle_menu_callback(call)
             elif data.startswith('point_'):
@@ -954,38 +919,28 @@ if tg_bot:
                 admin_back(call)
             else:
                 answer_callback(call, "Неизвестная команда")
-        except Exception as e:
-            logger.error(f"Ошибка в tg_callback: {e}")
-            answer_callback(call, "Произошла ошибка")
 
-    @tg_bot.message_handler(content_types=['text'])
-    def tg_text(message):
-        chat_id = message.chat.id
-        try:
+        @tg_bot.message_handler(content_types=['text'])
+        def tg_text(message):
+            chat_id = message.chat.id
             if message.text.startswith('/add_admin'):
                 handle_add_admin_command(message, chat_id)
             else:
                 handle_text_message(message)
-        except Exception as e:
-            logger.error(f"Ошибка в tg_text: {e}")
 
-    @tg_bot.message_handler(content_types=['photo'])
-    def tg_photo(message):
-        try:
+        @tg_bot.message_handler(content_types=['photo'])
+        def tg_photo(message):
             handle_photo_message_global(message)
-        except Exception as e:
-            logger.error(f"Ошибка в tg_photo: {e}")
 
-if max_bot:
-    @max_bot.message_handler(commands=['start'])
-    def max_start(message):
-        logger.info(f"MAX start от {message.from_user.id}")
-        show_main_menu(message.chat.id, message.from_user.id)
+    if max_bot:
+        @max_bot.message_handler(commands=['start'])
+        def max_start(message):
+            logger.info(f"MAX start от {message.from_user.id}")
+            show_main_menu(message.chat.id, message.from_user.id)
 
-    @max_bot.callback_query_handler(func=lambda call: True)
-    def max_callback(call):
-        data = call.data
-        try:
+        @max_bot.callback_query_handler(func=lambda call: True)
+        def max_callback(call):
+            data = call.data
             if data.startswith('menu_'):
                 handle_menu_callback(call)
             elif data.startswith('point_'):
@@ -1012,60 +967,97 @@ if max_bot:
                 admin_back(call)
             else:
                 answer_callback(call, "Неизвестная команда")
-        except Exception as e:
-            logger.error(f"Ошибка в max_callback: {e}")
-            answer_callback(call, "Произошла ошибка")
 
-    @max_bot.message_handler(content_types=['text'])
-    def max_text(message):
-        chat_id = message.chat.id
-        try:
+        @max_bot.message_handler(content_types=['text'])
+        def max_text(message):
+            chat_id = message.chat.id
             if message.text.startswith('/add_admin'):
                 handle_add_admin_command(message, chat_id)
             else:
                 handle_text_message(message)
-        except Exception as e:
-            logger.error(f"Ошибка в max_text: {e}")
 
-    @max_bot.message_handler(content_types=['photo'])
-    def max_photo(message):
-        try:
+        @max_bot.message_handler(content_types=['photo'])
+        def max_photo(message):
             handle_photo_message_global(message)
-        except Exception as e:
-            logger.error(f"Ошибка в max_photo: {e}")
 
 # ---------------------------------------------------------------------
-# ЗАПУСК БОТОВ С ПЕРЕЗАПУСКОМ
+# ФОНОВАЯ ЗАДАЧА НАПОМИНАНИЙ
 # ---------------------------------------------------------------------
-def run_bot_with_restart(bot_instance, bot_name, poll_func):
-    """Запускает бота и перезапускает его в случае падения."""
+def reminder_checker():
     while True:
         try:
-            logger.info(f"Запуск {bot_name}...")
-            poll_func()
+            now = datetime.now()
+            settings = load_settings()
+            reminder_time = settings.get('reminder_time', '09:00')
+            if now.strftime('%H:%M') == reminder_time:
+                requests = load_requests()
+                today = now.strftime('%Y-%m-%d')
+                for req in requests:
+                    if req.get('reminder_date') == today and req['status'] == 'not_guilty' and not req.get('reminder_sent', False):
+                        point = req.get('point')
+                        for admin in settings['admin_ids']:
+                            if point in admin.get('points', []):
+                                admin_id = admin['id']
+                                text = (
+                                    f"⏰ НАПОМИНАНИЕ!\n\n"
+                                    f"Заявка №{req['id']} ожидает согласования!\n"
+                                    f"🏢 Точка: {point}\n"
+                                    f"👤 ФИО: {req['fio']}\n"
+                                    f"📅 Дата штрафа: {req['date']}\n"
+                                    f"🔢 Номер штрафа: {req.get('penalty_number', 'Не указан')}"
+                                )
+                                markup = tg_types.InlineKeyboardMarkup()
+                                btn = tg_types.InlineKeyboardButton(
+                                    f"📋 Перейти к заявке №{req['id']}",
+                                    callback_data=f"view_{req['id']}"
+                                )
+                                markup.add(btn)
+                                send_message(admin_id, text, reply_markup=markup)
+                        req['reminder_sent'] = True
+                        save_requests(requests)
+            time.sleep(60)
         except Exception as e:
-            logger.error(f"{bot_name} упал с ошибкой: {e}")
-            logger.info(f"Перезапуск {bot_name} через 5 секунд...")
-            time.sleep(5)
+            logger.error(f"Reminder error: {e}")
+            time.sleep(60)
 
-def start_tg():
-    if tg_bot:
-        run_bot_with_restart(tg_bot, "Telegram", lambda: tg_bot.polling(none_stop=True, interval=0))
-
-def start_max():
-    if max_bot:
-        # Определяем метод polling для MAX
-        if hasattr(max_bot, 'start_polling'):
-            poll_method = max_bot.start_polling
-        elif hasattr(max_bot, 'polling'):
-            poll_method = lambda: max_bot.polling(none_stop=True)
-        else:
-            logger.error("У max_bot нет метода polling или start_polling")
-            return
-        run_bot_with_restart(max_bot, "MAX", poll_method)
+def start_reminder_thread():
+    t = threading.Thread(target=reminder_checker, daemon=True)
+    t.start()
+    logger.info("Напоминания запущены")
 
 # ---------------------------------------------------------------------
-# ЗАПУСК
+# ЗАПУСК БОТОВ С ПЕРЕЗАПУСКОМ ПРИ ПАДЕНИИ
+# ---------------------------------------------------------------------
+def run_tg():
+    while True:
+        try:
+            if tg_bot:
+                logger.info("🟢 Telegram бот запущен")
+                tg_bot.polling(none_stop=True, interval=0)
+        except Exception as e:
+            logger.error(f"Telegram polling упал: {e}")
+            time.sleep(5)  # ждём перед перезапуском
+            continue
+
+def run_max():
+    while True:
+        try:
+            if max_bot:
+                logger.info("🟢 MAX бот запущен")
+                if hasattr(max_bot, 'start_polling'):
+                    max_bot.start_polling()
+                elif hasattr(max_bot, 'polling'):
+                    max_bot.polling(none_stop=True)
+                else:
+                    logger.error("MAX: нет метода polling/start_polling")
+                    time.sleep(60)
+        except Exception as e:
+            logger.error(f"MAX polling упал: {e}")
+            time.sleep(5)
+            continue
+
+# ---------------------------------------------------------------------
+# MAIN
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
     logger.info("=" * 50)
@@ -1077,12 +1069,14 @@ if __name__ == "__main__":
     for adm in settings['admin_ids']:
         logger.info(f"  • {adm.get('name')} (ID: {adm['id']}) - точки: {', '.join(adm.get('points', []))}")
     
-    # Запускаем ботов в отдельных потоках с автоматическим перезапуском
-    t1 = threading.Thread(target=start_tg, daemon=True)
-    t2 = threading.Thread(target=start_max, daemon=True)
+    setup_handlers()
+    start_reminder_thread()
+    
+    # Запускаем ботов в бесконечных циклах с перезапуском
+    t1 = threading.Thread(target=run_tg, daemon=True)
+    t2 = threading.Thread(target=run_max, daemon=True)
     t1.start()
     t2.start()
     
-    # Ожидаем завершения потоков (они будут работать вечно)
-    t1.join()
-    t2.join()
+    while True:
+        time.sleep(60)
