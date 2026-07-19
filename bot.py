@@ -10,35 +10,38 @@ from flask import Flask, jsonify
 import telebot
 from telebot import types as tg_types
 
-# Для MAX
+# Для MAX — используем правильный импорт
 try:
     from maxbot import Client as MaxClient
 except ImportError:
     MaxClient = None
 
-# ---------------------------------------------------------------------
-# НАСТРОЙКИ
-# ---------------------------------------------------------------------
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Загружаем токены из переменных окружения (Render)
+# ---------------------------------------------------------------------
+# ТОКЕНЫ
+# ---------------------------------------------------------------------
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 MAX_TOKEN = os.getenv('MAX_TOKEN')
 
 if not TELEGRAM_TOKEN and not MAX_TOKEN:
     raise ValueError("Задайте TELEGRAM_TOKEN или MAX_TOKEN")
 
-# Создаём экземпляры ботов (если токен есть)
+logger.info(f"TELEGRAM_TOKEN: {'установлен' if TELEGRAM_TOKEN else 'не задан'}")
+logger.info(f"MAX_TOKEN: {'установлен' if MAX_TOKEN else 'не задан'}")
+
+# Создаём ботов
 tg_bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 max_bot = MaxClient(MAX_TOKEN) if (MAX_TOKEN and MaxClient) else None
 
-# ============================================
+logger.info(f"tg_bot создан: {tg_bot is not None}")
+logger.info(f"max_bot создан: {max_bot is not None}")
+
+# ---------------------------------------------------------------------
 # ВЕБ-СЕРВЕР ДЛЯ RENDER
-# ============================================
-
-from flask import Flask, jsonify
-import os
-import threading
-
+# ---------------------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
@@ -47,18 +50,13 @@ def health():
     return jsonify({"status": "ok", "bot": "running"}), 200
 
 def run_web():
-    # Render передаёт порт через переменную PORT, по умолчанию 10000[reference:2]
     port = int(os.environ.get('PORT', 10000))
-    # Важно: host='0.0.0.0', чтобы сервер был доступен извне[reference:3]
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
 
-# Запускаем веб-сервер в отдельном потоке
 web_thread = threading.Thread(target=run_web, daemon=True)
 web_thread.start()
-
-# Небольшая пауза, чтобы сервер точно успел запуститься
-import time
-time.sleep(2)
+time.sleep(2)  # Даём серверу время запуститься
+logger.info("Flask-сервер запущен")
 
 # ---------------------------------------------------------------------
 # ФАЙЛЫ ДАННЫХ
@@ -92,9 +90,8 @@ def load_settings():
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
-    # Настройки по умолчанию (сразу добавляем админов из DEFAULT_ADMINS)
     default_settings = {
-        'admin_ids': DEFAULT_ADMINS,  # заранее заданные админы
+        'admin_ids': DEFAULT_ADMINS,
         'reminder_time': '09:00',
         'points': ['Ашан, Химки', 'Metro, Черная Грязь']
     }
@@ -106,12 +103,10 @@ def save_settings(settings):
         json.dump(settings, f, ensure_ascii=False, indent=2)
 
 # ---------------------------------------------------------------------
-# АДМИНЫ ПО УМОЛЧАНИЮ — ПРОПИШИТЕ СВОИ ID ЗДЕСЬ
+# АДМИНЫ ПО УМОЛЧАНИЮ — ПРОПИШИТЕ СВОЙ ID ЗДЕСЬ
 # ---------------------------------------------------------------------
-# Формат: [{'id': 123456789, 'points': ['Точка А', 'Точка Б'], 'name': 'Имя'}]
 DEFAULT_ADMINS = [
-    {'id': 995419713, 'points': ['Ашан, Химки', 'Metro, Черная Грязь'], 'name': 'Даша'},  # ЗАМЕНИТЕ НА СВОЙ ID
-    # Добавьте других админов по необходимости
+    {'id': 995419713, 'points': ['Ашан, Химки', 'Metro, Черная Грязь'], 'name': 'Даша'},
 ]
 
 # ---------------------------------------------------------------------
@@ -143,7 +138,6 @@ def get_admin_name(user_id):
     for admin in settings['admin_ids']:
         if admin['id'] == user_id:
             return admin.get('name', f"Админ {user_id}")
-    # Если не нашли, пытаемся получить через Telegram
     if tg_bot:
         try:
             user = tg_bot.get_chat(user_id)
@@ -165,56 +159,56 @@ def can_admin_view_request(admin_id, request):
     return request.get('point') in get_admin_points(admin_id)
 
 # ---------------------------------------------------------------------
-# АДАПТЕРЫ ОТПРАВКИ СООБЩЕНИЙ (для обоих платформ)
+# АДАПТЕРЫ ОТПРАВКИ
 # ---------------------------------------------------------------------
 def send_message(chat_id, text, reply_markup=None, parse_mode='HTML'):
     if tg_bot:
         try:
             tg_bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
         except Exception as e:
-            print(f"TG send error: {e}")
+            logger.error(f"TG send error: {e}")
     if max_bot:
         try:
             max_bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
         except Exception as e:
-            print(f"MAX send error: {e}")
+            logger.error(f"MAX send error: {e}")
 
 def send_photo(chat_id, photo, caption=None, reply_markup=None):
     if tg_bot:
         try:
             tg_bot.send_photo(chat_id, photo, caption=caption, reply_markup=reply_markup)
         except Exception as e:
-            print(f"TG send_photo error: {e}")
+            logger.error(f"TG send_photo error: {e}")
     if max_bot:
         try:
             max_bot.send_photo(chat_id, photo, caption=caption, reply_markup=reply_markup)
         except Exception as e:
-            print(f"MAX send_photo error: {e}")
+            logger.error(f"MAX send_photo error: {e}")
 
 def edit_message_text(new_text, chat_id, message_id, reply_markup=None, parse_mode='HTML'):
     if tg_bot:
         try:
             tg_bot.edit_message_text(new_text, chat_id, message_id, reply_markup=reply_markup, parse_mode=parse_mode)
         except Exception as e:
-            print(f"TG edit error: {e}")
+            logger.error(f"TG edit error: {e}")
     if max_bot:
         try:
             max_bot.edit_message_text(new_text, chat_id, message_id, reply_markup=reply_markup, parse_mode=parse_mode)
         except Exception as e:
-            print(f"MAX edit error: {e}")
+            logger.error(f"MAX edit error: {e}")
 
 def answer_callback(call, text=None, show_alert=False):
     if tg_bot:
         try:
             tg_bot.answer_callback_query(call.id, text=text, show_alert=show_alert)
         except Exception as e:
-            print(f"TG answer error: {e}")
+            logger.error(f"TG answer error: {e}")
     if max_bot:
         try:
             if hasattr(call, 'id'):
                 max_bot.answer_callback_query(call.id, text=text, show_alert=show_alert)
         except Exception as e:
-            print(f"MAX answer error: {e}")
+            logger.error(f"MAX answer error: {e}")
 
 # ---------------------------------------------------------------------
 # ГЛАВНОЕ МЕНЮ
@@ -232,6 +226,27 @@ def show_main_menu(chat_id, user_id):
         markup.row(btn5)
     send_message(chat_id, "👋 Привет! Выберите действие:", reply_markup=markup)
 
+# ---------------------------------------------------------------------
+# ОБРАБОТЧИКИ CALLBACK
+# ---------------------------------------------------------------------
+def handle_menu_callback(call):
+    chat_id = call.message.chat.id
+    data = call.data
+    if data == "menu_new":
+        show_point_selection(chat_id)
+    elif data == "menu_my":
+        show_my_requests(chat_id)
+    elif data == "menu_help":
+        send_message(chat_id, "📖 Помощь: ...")
+    elif data == "menu_example":
+        show_example_request(chat_id)
+    elif data == "menu_admin":
+        if is_admin(chat_id):
+            admin_panel(chat_id)
+        else:
+            send_message(chat_id, "⛔ Нет доступа.")
+    answer_callback(call)   # ← ВАЖНО: закрываем callback
+    
 # ---------------------------------------------------------------------
 # ВСЕ ОБРАБОТЧИКИ (ЗАЯВКИ, АДМИНКА, СТАТУСЫ)
 # ---------------------------------------------------------------------
@@ -1051,31 +1066,145 @@ def start_reminder_thread():
     t.start()
 
 # ---------------------------------------------------------------------
+# РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ
+# ---------------------------------------------------------------------
+if tg_bot:
+    @tg_bot.message_handler(commands=['start'])
+    def tg_start(message):
+        logger.info(f"Telegram start от {message.from_user.id}")
+        show_main_menu(message.chat.id, message.from_user.id)
+
+    @tg_bot.callback_query_handler(func=lambda call: True)
+    def tg_callback(call):
+        data = call.data
+        if data.startswith('menu_'):
+            handle_menu_callback(call)
+        elif data.startswith('point_'):
+            handle_point_callback(call)
+        elif data.startswith('confirm_'):
+            handle_confirm_callback(call)
+        elif data.startswith('admin_'):
+            handle_admin_callback(call)
+        elif data.startswith('view_'):
+            view_request(call)
+        elif data.startswith('take_'):
+            take_to_work(call)
+        elif data.startswith(('guilty_', 'not_guilty_', 'approved_', 'rejected_')):
+            change_status(call)
+        elif data.startswith('appeal_'):
+            add_appeal(call)
+        elif data.startswith('comment_'):
+            add_comment(call)
+        elif data.startswith('history_'):
+            show_history(call)
+        elif data.startswith('remind_'):
+            set_reminder(call)
+        elif data == 'admin_back':
+            admin_back(call)
+        else:
+            answer_callback(call, "Неизвестная команда")
+
+    @tg_bot.message_handler(content_types=['text'])
+    def tg_text(message):
+        chat_id = message.chat.id
+        if message.text.startswith('/add_admin'):
+            handle_add_admin_command(message, chat_id)
+        else:
+            handle_text_message(message)
+
+    @tg_bot.message_handler(content_types=['photo'])
+    def tg_photo(message):
+        handle_photo_message_global(message)
+
+if max_bot:
+    @max_bot.message_handler(commands=['start'])
+    def max_start(message):
+        logger.info(f"MAX start от {message.from_user.id}")
+        show_main_menu(message.chat.id, message.from_user.id)
+
+    @max_bot.callback_query_handler(func=lambda call: True)
+    def max_callback(call):
+        data = call.data
+        if data.startswith('menu_'):
+            handle_menu_callback(call)
+        elif data.startswith('point_'):
+            handle_point_callback(call)
+        elif data.startswith('confirm_'):
+            handle_confirm_callback(call)
+        elif data.startswith('admin_'):
+            handle_admin_callback(call)
+        elif data.startswith('view_'):
+            view_request(call)
+        elif data.startswith('take_'):
+            take_to_work(call)
+        elif data.startswith(('guilty_', 'not_guilty_', 'approved_', 'rejected_')):
+            change_status(call)
+        elif data.startswith('appeal_'):
+            add_appeal(call)
+        elif data.startswith('comment_'):
+            add_comment(call)
+        elif data.startswith('history_'):
+            show_history(call)
+        elif data.startswith('remind_'):
+            set_reminder(call)
+        elif data == 'admin_back':
+            admin_back(call)
+        else:
+            answer_callback(call, "Неизвестная команда")
+
+    @max_bot.message_handler(content_types=['text'])
+    def max_text(message):
+        chat_id = message.chat.id
+        if message.text.startswith('/add_admin'):
+            handle_add_admin_command(message, chat_id)
+        else:
+            handle_text_message(message)
+
+    @max_bot.message_handler(content_types=['photo'])
+    def max_photo(message):
+        handle_photo_message_global(message)
+
+# ---------------------------------------------------------------------
 # ЗАПУСК БОТОВ
 # ---------------------------------------------------------------------
 def run_tg():
     if tg_bot:
-        print("🟢 Telegram бот запущен")
-        tg_bot.polling(none_stop=True)
+        logger.info("🟢 Запускаем Telegram бота...")
+        try:
+            tg_bot.polling(none_stop=True, interval=0)
+        except Exception as e:
+            logger.error(f"Telegram polling error: {e}")
 
 def run_max():
     if max_bot:
-        print("🟢 MAX бот запущен")
-        max_bot.polling(none_stop=True)
+        logger.info("🟢 Запускаем MAX бота...")
+        try:
+            # В umaxbot метод polling может отсутствовать, используем start_polling
+            if hasattr(max_bot, 'start_polling'):
+                max_bot.start_polling()
+            elif hasattr(max_bot, 'polling'):
+                max_bot.polling(none_stop=True)
+            else:
+                logger.error("У max_bot нет методов polling или start_polling")
+        except Exception as e:
+            logger.error(f"MAX polling error: {e}")
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print("🤖 БОТ ЗАПУЩЕН (Telegram + MAX) на Render")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("🤖 БОТ ЗАПУЩЕН (Telegram + MAX) на Render")
+    logger.info("=" * 50)
     settings = load_settings()
-    print(f"🏢 Точки: {', '.join(settings.get('points', []))}")
-    print(f"👤 Админов: {len(settings['admin_ids'])}")
+    logger.info(f"🏢 Точки: {', '.join(settings.get('points', []))}")
+    logger.info(f"👤 Админов: {len(settings['admin_ids'])}")
     for adm in settings['admin_ids']:
-        print(f"  • {adm.get('name')} (ID: {adm['id']}) - точки: {', '.join(adm.get('points', []))}")
-    start_reminder_thread()
-    t1 = threading.Thread(target=run_tg)
-    t2 = threading.Thread(target=run_max)
+        logger.info(f"  • {adm.get('name')} (ID: {adm['id']}) - точки: {', '.join(adm.get('points', []))}")
+    
+    # Запускаем ботов в отдельных потоках
+    t1 = threading.Thread(target=run_tg, daemon=True)
+    t2 = threading.Thread(target=run_max, daemon=True)
     t1.start()
     t2.start()
-    t1.join()
-    t2.join()
+    
+    # Держим основной поток живым
+    while True:
+        time.sleep(60)
