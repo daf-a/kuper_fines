@@ -12,8 +12,8 @@ import time
 # НАСТРОЙКИ (токены из переменных окружения)
 # ============================================
 
-TELEGRAM_TOKEN = os.getenv('8853251814:AAGhjt049zBOGBv-KVc7tPOWUFkQjokD_A0')
-MAX_TOKEN = os.getenv('f9LHodD0cOKVyZao5VA576aR4HYtpBR7Zjal0Gp2lV-tewhgRKYsJqkfYkSHzJW1zE9tlWnK74EYfYhGcryS')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+MAX_TOKEN = os.getenv('MAX_TOKEN')
 
 if not TELEGRAM_TOKEN and not MAX_TOKEN:
     raise ValueError("Не заданы токены! Установите TELEGRAM_TOKEN и/или MAX_TOKEN.")
