@@ -9,9 +9,7 @@ from flask import Flask, jsonify
 import telebot
 from telebot import types as tg_types
 
-# ---------------------------------------------------------------------
-# НАСТРОЙКА ЛОГИРОВАНИЯ
-# ---------------------------------------------------------------------
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -20,17 +18,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
-# ТОКЕН TELEGRAM
+# ТОКЕНЫ (только Telegram)
 # ---------------------------------------------------------------------
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TELEGRAM_TOKEN:
     raise ValueError("Задайте TELEGRAM_TOKEN")
 
-logger.info("TELEGRAM_TOKEN установлен")
+logger.info(f"TELEGRAM_TOKEN установлен")
 
 # Создаём бота
 tg_bot = telebot.TeleBot(TELEGRAM_TOKEN)
-logger.info("tg_bot создан")
+logger.info(f"tg_bot создан")
 
 # ---------------------------------------------------------------------
 # ВЕБ-СЕРВЕР ДЛЯ RENDER (health check)
@@ -67,7 +65,7 @@ STATUSES = {
 }
 
 # ---------------------------------------------------------------------
-# РАБОТА С ФАЙЛАМИ (с блокировкой)
+# РАБОТА С ФАЙЛАМИ
 # ---------------------------------------------------------------------
 file_lock = threading.Lock()
 
@@ -102,7 +100,7 @@ def save_settings(settings):
             json.dump(settings, f, ensure_ascii=False, indent=2)
 
 # ---------------------------------------------------------------------
-# АДМИНЫ ПО УМОЛЧАНИЮ (замените ID на свой)
+# АДМИНЫ ПО УМОЛЧАНИЮ
 # ---------------------------------------------------------------------
 DEFAULT_ADMINS = [
     {'id': 995419713, 'points': ['Ашан, Химки', 'Metro, Черная Грязь'], 'name': 'Даша'},
@@ -157,31 +155,31 @@ def can_admin_view_request(admin_id, request):
     return request.get('point') in get_admin_points(admin_id)
 
 # ---------------------------------------------------------------------
-# ОТПРАВКА СООБЩЕНИЙ (обёртки)
+# АДАПТЕРЫ ОТПРАВКИ (только Telegram)
 # ---------------------------------------------------------------------
 def send_message(chat_id, text, reply_markup=None, parse_mode='HTML'):
     try:
         tg_bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
     except Exception as e:
-        logger.error(f"send_message error: {e}")
+        logger.error(f"TG send error: {e}")
 
 def send_photo(chat_id, photo, caption=None, reply_markup=None):
     try:
         tg_bot.send_photo(chat_id, photo, caption=caption, reply_markup=reply_markup)
     except Exception as e:
-        logger.error(f"send_photo error: {e}")
+        logger.error(f"TG send_photo error: {e}")
 
 def edit_message_text(new_text, chat_id, message_id, reply_markup=None, parse_mode='HTML'):
     try:
         tg_bot.edit_message_text(new_text, chat_id, message_id, reply_markup=reply_markup, parse_mode=parse_mode)
     except Exception as e:
-        logger.error(f"edit_message_text error: {e}")
+        logger.error(f"TG edit error: {e}")
 
 def answer_callback(call, text=None, show_alert=False):
     try:
         tg_bot.answer_callback_query(call.id, text=text, show_alert=show_alert)
     except Exception as e:
-        logger.error(f"answer_callback error: {e}")
+        logger.error(f"TG answer error: {e}")
 
 # ---------------------------------------------------------------------
 # ГЛАВНОЕ МЕНЮ
@@ -200,7 +198,7 @@ def show_main_menu(chat_id, user_id):
     send_message(chat_id, "👋 Привет! Выберите действие:", reply_markup=markup)
 
 # ---------------------------------------------------------------------
-# ОБРАБОТЧИК MENU CALLBACK
+# ОБРАБОТЧИКИ МЕНЮ
 # ---------------------------------------------------------------------
 def handle_menu_callback(call):
     chat_id = call.message.chat.id
@@ -210,16 +208,7 @@ def handle_menu_callback(call):
     elif data == "menu_my":
         show_my_requests(chat_id)
     elif data == "menu_help":
-        help_text = (
-            "📖 Инструкция:\n\n"
-            "1. Нажмите 'Подать заявку'\n"
-            "2. Выберите точку\n"
-            "3. Введите ФИО\n"
-            "4. Отправьте фото штрафа\n"
-            "5. Введите дату (ДД.ММ.ГГГГ)\n\n"
-            "Статусы: ⏳ В очереди, 🔄 В работе, 🔴 Виновен, 🟡 На согласовании, 🟢 Согласовано, ⚫ Не согласовано"
-        )
-        send_message(chat_id, help_text)
+        send_message(chat_id, "📖 Помощь: ...")
     elif data == "menu_example":
         show_example_request(chat_id)
     elif data == "menu_admin":
@@ -230,7 +219,7 @@ def handle_menu_callback(call):
     answer_callback(call)
 
 # ---------------------------------------------------------------------
-# ЗАЯВКИ: ВЫБОР ТОЧКИ
+# ВСЕ ОБРАБОТЧИКИ (ЗАЯВКИ, АДМИНКА, СТАТУСЫ)
 # ---------------------------------------------------------------------
 def show_point_selection(chat_id):
     settings = load_settings()
@@ -248,9 +237,6 @@ def handle_point_callback(call):
     edit_message_text(f"✅ Выбрана точка: {point}\n\n👤 Введите ваше ФИО полностью:", chat_id, call.message.message_id)
     answer_callback(call)
 
-# ---------------------------------------------------------------------
-# ЗАЯВКИ: ПРОЦЕСС СОЗДАНИЯ
-# ---------------------------------------------------------------------
 def process_request_creation(chat_id, text):
     if chat_id not in user_data:
         return
@@ -286,13 +272,14 @@ def handle_photo_message(message):
     if chat_id in user_data and user_data[chat_id].get('step') == 'photo':
         if hasattr(message, 'photo'):
             file_id = message.photo[-1].file_id
+        else:
+            file_id = None
+        if file_id:
             user_data[chat_id]['photo_id'] = file_id
             user_data[chat_id]['step'] = 'date'
             send_message(chat_id, "📅 Введите дату в формате ДД.ММ.ГГГГ:")
         else:
             send_message(chat_id, "❌ Не удалось получить фото.")
-    else:
-        send_message(chat_id, "❌ Сейчас не нужно фото. Нажмите 'Подать заявку'.")
 
 def handle_confirm_callback(call):
     chat_id = call.message.chat.id
@@ -347,9 +334,6 @@ def handle_confirm_callback(call):
         show_point_selection(chat_id)
         answer_callback(call)
 
-# ---------------------------------------------------------------------
-# УВЕДОМЛЕНИЕ АДМИНОВ
-# ---------------------------------------------------------------------
 def notify_admins_for_point(request):
     settings = load_settings()
     point = request.get('point')
@@ -373,9 +357,6 @@ def notify_admins_for_point(request):
             markup.add(btn)
             send_photo(admin_id, request['photo_id'], caption=caption, reply_markup=markup)
 
-# ---------------------------------------------------------------------
-# МОИ ЗАЯВКИ
-# ---------------------------------------------------------------------
 def show_my_requests(chat_id):
     requests = load_requests()
     user_requests = [r for r in requests if r['user_id'] == chat_id]
@@ -394,9 +375,6 @@ def show_my_requests(chat_id):
         text += f"   Создана: {req['created_at']}\n\n"
     send_message(chat_id, text)
 
-# ---------------------------------------------------------------------
-# ПРИМЕР ЗАЯВКИ
-# ---------------------------------------------------------------------
 def show_example_request(chat_id):
     example_text = (
         "📝 **ПРИМЕР ЗАЯВКИ**\n\n"
@@ -410,9 +388,6 @@ def show_example_request(chat_id):
     )
     send_message(chat_id, example_text, parse_mode='HTML')
 
-# ---------------------------------------------------------------------
-# АДМИН-ПАНЕЛЬ И УПРАВЛЕНИЕ ЗАЯВКАМИ
-# ---------------------------------------------------------------------
 def admin_panel(chat_id):
     if not is_admin(chat_id):
         send_message(chat_id, "⛔ У вас нет доступа.")
@@ -480,9 +455,6 @@ def show_requests_list(chat_id, requests, title):
         markup.add(btn)
     send_message(chat_id, f"📋 {title} ({len(requests)} шт.):", reply_markup=markup)
 
-# ---------------------------------------------------------------------
-# ПРОСМОТР ЗАЯВКИ
-# ---------------------------------------------------------------------
 def view_request(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -545,9 +517,6 @@ def view_request(call):
     send_message(chat_id, "Выберите действие:", reply_markup=markup)
     answer_callback(call)
 
-# ---------------------------------------------------------------------
-# ДЕЙСТВИЯ АДМИНА
-# ---------------------------------------------------------------------
 def take_to_work(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -599,12 +568,14 @@ def change_status(call):
         answer_callback(call, "❌ Заявка не на согласовании", True)
         return
 
+    # Если это not_guilty — запрашиваем номер штрафа
     if action == 'not_guilty':
         user_data[chat_id] = {'action': 'add_penalty_number', 'req_id': req_id}
         send_message(chat_id, f"✍️ Введите НОМЕР ШТРАФА для заявки №{req_id} (только для админов):")
         answer_callback(call)
         return
 
+    # Остальные статусы
     status_map = {'guilty': 'guilty', 'approved': 'approved', 'rejected': 'rejected'}
     new_status = status_map[action]
     admin_name = get_admin_name(chat_id)
@@ -651,7 +622,7 @@ def add_penalty_number(message):
     del user_data[chat_id]
 
 # ---------------------------------------------------------------------
-# ОСТАЛЬНЫЕ ФУНКЦИИ (appeal, comment, history, remind, reminders, stats, settings)
+# ОСТАЛЬНЫЕ ФУНКЦИИ (appeal, comment, history, remind, reminders, stats, settings, admin_back)
 # ---------------------------------------------------------------------
 def add_appeal(call):
     chat_id = call.message.chat.id
@@ -851,7 +822,6 @@ def handle_text_message(message):
         else:
             process_request_creation(chat_id, message.text)
     else:
-        # Если не в процессе, показываем меню (можно не повторять)
         show_main_menu(chat_id, chat_id)
 
 def handle_photo_message_global(message):
@@ -907,12 +877,12 @@ def handle_add_admin_command(message, user_id):
 # ---------------------------------------------------------------------
 def setup_handlers():
     @tg_bot.message_handler(commands=['start'])
-    def start_handler(message):
+    def tg_start(message):
         logger.info(f"Telegram start от {message.from_user.id}")
         show_main_menu(message.chat.id, message.from_user.id)
 
     @tg_bot.callback_query_handler(func=lambda call: True)
-    def callback_handler(call):
+    def tg_callback(call):
         data = call.data
         if data.startswith('menu_'):
             handle_menu_callback(call)
@@ -942,7 +912,7 @@ def setup_handlers():
             answer_callback(call, "Неизвестная команда")
 
     @tg_bot.message_handler(content_types=['text'])
-    def text_handler(message):
+    def tg_text(message):
         chat_id = message.chat.id
         if message.text.startswith('/add_admin'):
             handle_add_admin_command(message, chat_id)
@@ -950,7 +920,7 @@ def setup_handlers():
             handle_text_message(message)
 
     @tg_bot.message_handler(content_types=['photo'])
-    def photo_handler(message):
+    def tg_photo(message):
         handle_photo_message_global(message)
 
 # ---------------------------------------------------------------------
@@ -999,17 +969,21 @@ def start_reminder_thread():
     logger.info("Напоминания запущены")
 
 # ---------------------------------------------------------------------
-# ЗАПУСК БОТА (основной поток)
+# ЗАПУСК БОТА
 # ---------------------------------------------------------------------
-def run_bot():
-    logger.info("🟢 Telegram бот запущен (polling)")
+def run_tg():
+    print("🟢 Telegram бот запущен (polling)", flush=True)
     while True:
         try:
             tg_bot.polling(none_stop=True, interval=0)
         except Exception as e:
+            print(f"❌ Telegram polling упал: {e}", flush=True)
             logger.error(f"Telegram polling упал: {e}")
             time.sleep(5)
 
+# ---------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------
 if __name__ == "__main__":
     print("=" * 50, flush=True)
     print("🤖 TELEGRAM БОТ ЗАПУЩЕН на Render", flush=True)
@@ -1022,5 +996,6 @@ if __name__ == "__main__":
 
     setup_handlers()
     start_reminder_thread()
-    # Запускаем бота в основном потоке (он будет работать вечно)
-    run_bot()
+    
+    # Запускаем бота в основном потоке (без создания дополнительного потока)
+    run_tg()
