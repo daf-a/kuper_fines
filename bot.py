@@ -1,12 +1,17 @@
 import telebot
-import maxbot
-from telebot import types as tg_types
-from maxbot import types as max_types
 import json
 import os
 from datetime import datetime, timedelta
 import threading
 import time
+
+# Пытаемся импортировать umaxbot (библиотека для MAX)
+try:
+    from maxbot import Client as MaxClient
+except ImportError:
+    MaxClient = None
+
+from telebot import types as tg_types
 
 # ============================================
 # НАСТРОЙКИ (токены из переменных окружения)
@@ -18,9 +23,9 @@ MAX_TOKEN = os.getenv('MAX_TOKEN')
 if not TELEGRAM_TOKEN and not MAX_TOKEN:
     raise ValueError("Не заданы токены! Установите TELEGRAM_TOKEN и/или MAX_TOKEN.")
 
-# Создаём ботов (если токен задан)
+# Создаём ботов
 tg_bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
-max_bot = maxbot.Bot(MAX_TOKEN) if MAX_TOKEN else None
+max_bot = MaxClient(MAX_TOKEN) if (MAX_TOKEN and MaxClient) else None
 
 # Файлы для хранения данных
 REQUESTS_FILE = 'requests.json'
@@ -98,7 +103,6 @@ def get_admin_name(user_id):
         if admin['id'] == user_id:
             return admin.get('name', f"Админ {user_id}")
     try:
-        # Попробуем получить имя через Telegram (если бот есть)
         if tg_bot:
             user = tg_bot.get_chat(user_id)
             return user.first_name or user.username or str(user_id)
@@ -131,7 +135,6 @@ def get_available_requests(admin_id):
 # ============================================
 
 def send_message(chat_id, text, reply_markup=None, parse_mode='HTML'):
-    """Отправляет сообщение в оба мессенджера (если бот есть)"""
     if tg_bot:
         try:
             tg_bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
@@ -139,7 +142,6 @@ def send_message(chat_id, text, reply_markup=None, parse_mode='HTML'):
             print(f"TG send error: {e}")
     if max_bot:
         try:
-            # MAX поддерживает parse_mode='HTML'
             max_bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
         except Exception as e:
             print(f"MAX send error: {e}")
@@ -176,7 +178,6 @@ def answer_callback(call, text=None, show_alert=False):
             print(f"TG answer error: {e}")
     if max_bot:
         try:
-            # В maxbot может быть другой метод, попробуем через call
             if hasattr(call, 'id'):
                 max_bot.answer_callback_query(call.id, text=text, show_alert=show_alert)
         except Exception as e:
@@ -214,15 +215,15 @@ def max_callback_handler(callback_func):
 
 # --- Главное меню ---
 def show_main_menu(chat_id, user_id):
-    markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
-    btn1 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("📝 Подать заявку", callback_data="menu_new")
-    btn2 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("📋 Мои заявки", callback_data="menu_my")
-    btn3 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("ℹ️ Помощь", callback_data="menu_help")
-    btn4 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("📝 Пример заявки", callback_data="menu_example")
+    markup = tg_types.InlineKeyboardMarkup()
+    btn1 = tg_types.InlineKeyboardButton("📝 Подать заявку", callback_data="menu_new")
+    btn2 = tg_types.InlineKeyboardButton("📋 Мои заявки", callback_data="menu_my")
+    btn3 = tg_types.InlineKeyboardButton("ℹ️ Помощь", callback_data="menu_help")
+    btn4 = tg_types.InlineKeyboardButton("📝 Пример заявки", callback_data="menu_example")
     markup.row(btn1, btn2)
     markup.row(btn3, btn4)
     if is_admin(user_id):
-        btn5 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("🔧 Админ-панель", callback_data="menu_admin")
+        btn5 = tg_types.InlineKeyboardButton("🔧 Админ-панель", callback_data="menu_admin")
         markup.row(btn5)
     send_message(chat_id, "👋 Привет! Выберите действие:", reply_markup=markup)
 
@@ -266,9 +267,9 @@ def handle_menu_callback(call):
 def show_point_selection(chat_id):
     settings = load_settings()
     points = settings.get('points', ['Точка А', 'Точка Б'])
-    markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
+    markup = tg_types.InlineKeyboardMarkup()
     for point in points:
-        btn = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)(f"📍 {point}", callback_data=f"point_{point}")
+        btn = tg_types.InlineKeyboardButton(f"📍 {point}", callback_data=f"point_{point}")
         markup.add(btn)
     send_message(chat_id, "🏢 Выберите точку:", reply_markup=markup)
 
@@ -293,9 +294,9 @@ def process_request_creation(chat_id, text):
             datetime.strptime(text, '%d.%m.%Y')
             user_data[chat_id]['date'] = text
             user_data[chat_id]['step'] = 'confirm'
-            markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
-            btn_yes = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("✅ Да, все верно", callback_data="confirm_yes")
-            btn_no = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("❌ Нет, исправить", callback_data="confirm_no")
+            markup = tg_types.InlineKeyboardMarkup()
+            btn_yes = tg_types.InlineKeyboardButton("✅ Да, все верно", callback_data="confirm_yes")
+            btn_no = tg_types.InlineKeyboardButton("❌ Нет, исправить", callback_data="confirm_no")
             markup.row(btn_yes, btn_no)
             send_message(
                 chat_id,
@@ -314,12 +315,11 @@ def process_request_creation(chat_id, text):
 def handle_photo_message(message):
     chat_id = message.chat.id
     if chat_id in user_data and user_data[chat_id].get('step') == 'photo':
-        # Получаем file_id (в MAX и Telegram по-разному, но стараемся унифицировать)
+        # Получаем file_id (универсально)
         if hasattr(message, 'photo'):
             file_id = message.photo[-1].file_id
         else:
-            # Для MAX может быть другой атрибут
-            file_id = message.photo[-1].file_id if hasattr(message, 'photo') else None
+            file_id = None
         if file_id:
             user_data[chat_id]['photo_id'] = file_id
             user_data[chat_id]['step'] = 'date'
@@ -399,8 +399,8 @@ def notify_admins_for_point(request):
                 f"👤 Пользователь: @{request['username']}\n"
                 f"📊 Статус: {status_info['emoji']} {status_info['name']}"
             )
-            markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
-            btn = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)(
+            markup = tg_types.InlineKeyboardMarkup()
+            btn = tg_types.InlineKeyboardButton(
                 f"📋 Перейти к заявке №{request['id']}",
                 callback_data=f"view_{request['id']}"
             )
@@ -448,14 +448,14 @@ def admin_panel(chat_id):
     admin_points = get_admin_points(chat_id)
     is_super = is_super_admin(chat_id)
     points_text = "все точки" if is_super else ", ".join(admin_points)
-    markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
-    btn_all = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("📋 Все заявки", callback_data="admin_all")
-    btn_queue = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("⏳ В очереди", callback_data="admin_queue")
-    btn_work = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("🔄 В работе", callback_data="admin_work")
-    btn_not_guilty = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("🟡 На согласовании", callback_data="admin_not_guilty")
-    btn_reminders = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("⏰ Напоминания", callback_data="admin_reminders")
-    btn_stats = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("📊 Статистика", callback_data="admin_stats")
-    btn_settings = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("⚙️ Настройки", callback_data="admin_settings")
+    markup = tg_types.InlineKeyboardMarkup()
+    btn_all = tg_types.InlineKeyboardButton("📋 Все заявки", callback_data="admin_all")
+    btn_queue = tg_types.InlineKeyboardButton("⏳ В очереди", callback_data="admin_queue")
+    btn_work = tg_types.InlineKeyboardButton("🔄 В работе", callback_data="admin_work")
+    btn_not_guilty = tg_types.InlineKeyboardButton("🟡 На согласовании", callback_data="admin_not_guilty")
+    btn_reminders = tg_types.InlineKeyboardButton("⏰ Напоминания", callback_data="admin_reminders")
+    btn_stats = tg_types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")
+    btn_settings = tg_types.InlineKeyboardButton("⚙️ Настройки", callback_data="admin_settings")
     markup.row(btn_queue, btn_work)
     markup.row(btn_not_guilty, btn_all)
     markup.row(btn_reminders, btn_stats)
@@ -497,11 +497,11 @@ def show_requests_list(chat_id, requests, title):
     if not requests:
         send_message(chat_id, f"📭 {title} не найдены.")
         return
-    markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
+    markup = tg_types.InlineKeyboardMarkup()
     for req in requests[:20]:
         status_info = STATUSES.get(req['status'], {'emoji': '⚪', 'name': 'Неизвестно'})
         taken_info = f" (взял: {req['taken_by_name']})" if req.get('taken_by_name') else ""
-        btn = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)(
+        btn = tg_types.InlineKeyboardButton(
             f"{status_info['emoji']} №{req['id']} - {req['point']} | {req['fio'][:15]}{taken_info}",
             callback_data=f"view_{req['id']}"
         )
@@ -547,26 +547,26 @@ def view_request(call):
     send_photo(chat_id, req['photo_id'], caption=text)
 
     # Кнопки действий
-    markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
+    markup = tg_types.InlineKeyboardMarkup()
     if req['status'] == 'queue':
-        btn = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("🔄 Взять в работу", callback_data=f"take_{req_id}")
+        btn = tg_types.InlineKeyboardButton("🔄 Взять в работу", callback_data=f"take_{req_id}")
         markup.add(btn)
     elif req['status'] == 'work':
-        btn1 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("🔴 Виновен", callback_data=f"guilty_{req_id}")
-        btn2 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("🟡 Не виновен", callback_data=f"not_guilty_{req_id}")
+        btn1 = tg_types.InlineKeyboardButton("🔴 Виновен", callback_data=f"guilty_{req_id}")
+        btn2 = tg_types.InlineKeyboardButton("🟡 Не виновен", callback_data=f"not_guilty_{req_id}")
         markup.row(btn1, btn2)
     elif req['status'] == 'not_guilty':
-        btn1 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("🟢 Согласовано", callback_data=f"approved_{req_id}")
-        btn2 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("⚫ Не согласовано", callback_data=f"rejected_{req_id}")
-        btn3 = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("⏰ Напомнить через день", callback_data=f"remind_{req_id}")
+        btn1 = tg_types.InlineKeyboardButton("🟢 Согласовано", callback_data=f"approved_{req_id}")
+        btn2 = tg_types.InlineKeyboardButton("⚫ Не согласовано", callback_data=f"rejected_{req_id}")
+        btn3 = tg_types.InlineKeyboardButton("⏰ Напомнить через день", callback_data=f"remind_{req_id}")
         markup.row(btn1, btn2)
         markup.row(btn3)
-    btn_c = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("💬 Комментарий", callback_data=f"comment_{req_id}")
-    btn_a = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("✍️ Оспаривание", callback_data=f"appeal_{req_id}")
-    btn_h = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("📜 История", callback_data=f"history_{req_id}")
+    btn_c = tg_types.InlineKeyboardButton("💬 Комментарий", callback_data=f"comment_{req_id}")
+    btn_a = tg_types.InlineKeyboardButton("✍️ Оспаривание", callback_data=f"appeal_{req_id}")
+    btn_h = tg_types.InlineKeyboardButton("📜 История", callback_data=f"history_{req_id}")
     markup.row(btn_c, btn_a)
     markup.row(btn_h)
-    btn_back = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)("◀️ Назад", callback_data="admin_back")
+    btn_back = tg_types.InlineKeyboardButton("◀️ Назад", callback_data="admin_back")
     markup.add(btn_back)
     send_message(chat_id, "Выберите действие:", reply_markup=markup)
     answer_callback(call)
@@ -817,9 +817,9 @@ def show_reminders(chat_id):
     if not reminders:
         send_message(chat_id, "⏰ Напоминаний на сегодня нет.")
         return
-    markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
+    markup = tg_types.InlineKeyboardMarkup()
     for req in reminders:
-        btn = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)(
+        btn = tg_types.InlineKeyboardButton(
             f"№{req['id']} - {req['fio']} ({req['date']})",
             callback_data=f"view_{req['id']}"
         )
@@ -884,7 +884,7 @@ def handle_text_message(message):
         else:
             process_request_creation(chat_id, message.text)
     else:
-        # Если сообщение не в процессе создания, игнорируем или предлагаем меню
+        # Если сообщение не в процессе создания, предлагаем меню
         show_main_menu(chat_id, chat_id)
 
 # --- Обработка фото ---
@@ -1100,7 +1100,6 @@ if max_bot:
     # Команды управления для MAX (аналогично Telegram)
     @max_bot.message_handler(commands=['add_admin'])
     def max_add_admin(message):
-        # аналогично tg_add_admin
         chat_id = message.chat.id
         if not is_admin(chat_id):
             send_message(chat_id, "⛔ Нет прав")
@@ -1236,8 +1235,8 @@ def reminder_checker():
                                     f"📅 Дата штрафа: {req['date']}\n"
                                     f"🔢 Номер штрафа: {req.get('penalty_number', 'Не указан')}"
                                 )
-                                markup = tg_types.InlineKeyboardMarkup() if tg_bot else max_types.InlineKeyboardMarkup()
-                                btn = (tg_types.InlineKeyboardButton if tg_bot else max_types.InlineKeyboardButton)(
+                                markup = tg_types.InlineKeyboardMarkup()
+                                btn = tg_types.InlineKeyboardButton(
                                     f"📋 Перейти к заявке №{req['id']}",
                                     callback_data=f"view_{req['id']}"
                                 )
