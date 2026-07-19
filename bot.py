@@ -31,9 +31,14 @@ if not TELEGRAM_TOKEN and not MAX_TOKEN:
 tg_bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 max_bot = MaxClient(MAX_TOKEN) if (MAX_TOKEN and MaxClient) else None
 
-# ---------------------------------------------------------------------
-# WEB-СЕРВЕР ДЛЯ RENDER (health check)
-# ---------------------------------------------------------------------
+# ============================================
+# ВЕБ-СЕРВЕР ДЛЯ RENDER
+# ============================================
+
+from flask import Flask, jsonify
+import os
+import threading
+
 app = Flask(__name__)
 
 @app.route('/')
@@ -42,11 +47,18 @@ def health():
     return jsonify({"status": "ok", "bot": "running"}), 200
 
 def run_web():
+    # Render передаёт порт через переменную PORT, по умолчанию 10000[reference:2]
     port = int(os.environ.get('PORT', 10000))
+    # Важно: host='0.0.0.0', чтобы сервер был доступен извне[reference:3]
     app.run(host='0.0.0.0', port=port)
 
+# Запускаем веб-сервер в отдельном потоке
 web_thread = threading.Thread(target=run_web, daemon=True)
 web_thread.start()
+
+# Небольшая пауза, чтобы сервер точно успел запуститься
+import time
+time.sleep(2)
 
 # ---------------------------------------------------------------------
 # ФАЙЛЫ ДАННЫХ
