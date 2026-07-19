@@ -84,7 +84,7 @@ def load_settings():
     default_settings = {
         'admin_ids': DEFAULT_ADMINS,  # заранее заданные админы
         'reminder_time': '09:00',
-        'points': ['Точка А', 'Точка Б']
+        'points': ['Ашан, Химки', 'Metro, Черная Грязь']
     }
     save_settings(default_settings)
     return default_settings
@@ -98,7 +98,7 @@ def save_settings(settings):
 # ---------------------------------------------------------------------
 # Формат: [{'id': 123456789, 'points': ['Точка А', 'Точка Б'], 'name': 'Имя'}]
 DEFAULT_ADMINS = [
-    {'id': 123456789, 'points': ['Точка А', 'Точка Б'], 'name': 'Админ 1'},  # ЗАМЕНИТЕ НА СВОЙ ID
+    {'id': 995419713, 'points': ['Ашан, Химки', 'Metro, Черная Грязь'], 'name': 'Даша'},  # ЗАМЕНИТЕ НА СВОЙ ID
     # Добавьте других админов по необходимости
 ]
 
