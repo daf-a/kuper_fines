@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import time
 import json
@@ -8,31 +9,26 @@ from flask import Flask, jsonify
 import telebot
 from telebot import types as tg_types
 
-# Для MAX — используем правильный импорт
-try:
-    from maxbot import Client as MaxClient
-except ImportError:
-    MaxClient = None
-
 # Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
-# ТОКЕНЫ
+# ТОКЕНЫ (только Telegram)
 # ---------------------------------------------------------------------
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-MAX_TOKEN = os.getenv('MAX_TOKEN')
+if not TELEGRAM_TOKEN:
+    raise ValueError("Задайте TELEGRAM_TOKEN")
 
-if not TELEGRAM_TOKEN and not MAX_TOKEN:
-    raise ValueError("Задайте TELEGRAM_TOKEN или MAX_TOKEN")
+logger.info(f"TELEGRAM_TOKEN установлен")
 
-logger.info(f"TELEGRAM_TOKEN: {'установлен' if TELEGRAM_TOKEN else 'не задан'}")
-logger.info(f"MAX_TOKEN: {'установлен' if MAX_TOKEN else 'не задан'}")
-
-# Создаём ботов (с повторными попытками при ошибках)
-tg_bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
-max_bot = MaxClient(MAX_TOKEN) if (MAX_TOKEN and MaxClient) else None
+# Создаём бота
+tg_bot = telebot.TeleBot(TELEGRAM_TOKEN)
+logger.info(f"tg_bot создан")
 
 # ---------------------------------------------------------------------
 # ВЕБ-СЕРВЕР ДЛЯ RENDER (health check)
@@ -69,7 +65,7 @@ STATUSES = {
 }
 
 # ---------------------------------------------------------------------
-# РАБОТА С ФАЙЛАМИ (с защитой от конкурентного доступа)
+# РАБОТА С ФАЙЛАМИ
 # ---------------------------------------------------------------------
 file_lock = threading.Lock()
 
@@ -139,12 +135,11 @@ def get_admin_name(user_id):
     for admin in settings['admin_ids']:
         if admin['id'] == user_id:
             return admin.get('name', f"Админ {user_id}")
-    if tg_bot:
-        try:
-            user = tg_bot.get_chat(user_id)
-            return user.first_name or user.username or str(user_id)
-        except:
-            pass
+    try:
+        user = tg_bot.get_chat(user_id)
+        return user.first_name or user.username or str(user_id)
+    except:
+        pass
     return str(user_id)
 
 def get_available_requests(admin_id):
@@ -160,56 +155,31 @@ def can_admin_view_request(admin_id, request):
     return request.get('point') in get_admin_points(admin_id)
 
 # ---------------------------------------------------------------------
-# АДАПТЕРЫ ОТПРАВКИ
+# АДАПТЕРЫ ОТПРАВКИ (только Telegram)
 # ---------------------------------------------------------------------
 def send_message(chat_id, text, reply_markup=None, parse_mode='HTML'):
-    if tg_bot:
-        try:
-            tg_bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
-        except Exception as e:
-            logger.error(f"TG send error: {e}")
-    if max_bot:
-        try:
-            max_bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
-        except Exception as e:
-            logger.error(f"MAX send error: {e}")
+    try:
+        tg_bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception as e:
+        logger.error(f"TG send error: {e}")
 
 def send_photo(chat_id, photo, caption=None, reply_markup=None):
-    if tg_bot:
-        try:
-            tg_bot.send_photo(chat_id, photo, caption=caption, reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"TG send_photo error: {e}")
-    if max_bot:
-        try:
-            max_bot.send_photo(chat_id, photo, caption=caption, reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"MAX send_photo error: {e}")
+    try:
+        tg_bot.send_photo(chat_id, photo, caption=caption, reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"TG send_photo error: {e}")
 
 def edit_message_text(new_text, chat_id, message_id, reply_markup=None, parse_mode='HTML'):
-    if tg_bot:
-        try:
-            tg_bot.edit_message_text(new_text, chat_id, message_id, reply_markup=reply_markup, parse_mode=parse_mode)
-        except Exception as e:
-            logger.error(f"TG edit error: {e}")
-    if max_bot:
-        try:
-            max_bot.edit_message_text(new_text, chat_id, message_id, reply_markup=reply_markup, parse_mode=parse_mode)
-        except Exception as e:
-            logger.error(f"MAX edit error: {e}")
+    try:
+        tg_bot.edit_message_text(new_text, chat_id, message_id, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception as e:
+        logger.error(f"TG edit error: {e}")
 
 def answer_callback(call, text=None, show_alert=False):
-    if tg_bot:
-        try:
-            tg_bot.answer_callback_query(call.id, text=text, show_alert=show_alert)
-        except Exception as e:
-            logger.error(f"TG answer error: {e}")
-    if max_bot:
-        try:
-            if hasattr(call, 'id'):
-                max_bot.answer_callback_query(call.id, text=text, show_alert=show_alert)
-        except Exception as e:
-            logger.error(f"MAX answer error: {e}")
+    try:
+        tg_bot.answer_callback_query(call.id, text=text, show_alert=show_alert)
+    except Exception as e:
+        logger.error(f"TG answer error: {e}")
 
 # ---------------------------------------------------------------------
 # ГЛАВНОЕ МЕНЮ
@@ -226,6 +196,7 @@ def show_main_menu(chat_id, user_id):
         btn5 = tg_types.InlineKeyboardButton("🔧 Админ-панель", callback_data="menu_admin")
         markup.row(btn5)
     send_message(chat_id, "👋 Привет! Выберите действие:", reply_markup=markup)
+
     
 # ---------------------------------------------------------------------
 # ВСЕ ОБРАБОТЧИКИ (ЗАЯВКИ, АДМИНКА, СТАТУСЫ)
@@ -881,105 +852,55 @@ def handle_add_admin_command(message, user_id):
         send_message(message.chat.id, f"❌ Ошибка: {e}")
 
 # ---------------------------------------------------------------------
-# РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ
+# РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ TELEGRAM
 # ---------------------------------------------------------------------
 def setup_handlers():
-    if tg_bot:
-        @tg_bot.message_handler(commands=['start'])
-        def tg_start(message):
-            logger.info(f"Telegram start от {message.from_user.id}")
-            show_main_menu(message.chat.id, message.from_user.id)
+    @tg_bot.message_handler(commands=['start'])
+    def tg_start(message):
+        logger.info(f"Telegram start от {message.from_user.id}")
+        show_main_menu(message.chat.id, message.from_user.id)
 
-        @tg_bot.callback_query_handler(func=lambda call: True)
-        def tg_callback(call):
-            data = call.data
-            if data.startswith('menu_'):
-                handle_menu_callback(call)
-            elif data.startswith('point_'):
-                handle_point_callback(call)
-            elif data.startswith('confirm_'):
-                handle_confirm_callback(call)
-            elif data.startswith('admin_'):
-                handle_admin_callback(call)
-            elif data.startswith('view_'):
-                view_request(call)
-            elif data.startswith('take_'):
-                take_to_work(call)
-            elif data.startswith(('guilty_', 'not_guilty_', 'approved_', 'rejected_')):
-                change_status(call)
-            elif data.startswith('appeal_'):
-                add_appeal(call)
-            elif data.startswith('comment_'):
-                add_comment(call)
-            elif data.startswith('history_'):
-                show_history(call)
-            elif data.startswith('remind_'):
-                set_reminder(call)
-            elif data == 'admin_back':
-                admin_back(call)
-            else:
-                answer_callback(call, "Неизвестная команда")
+    @tg_bot.callback_query_handler(func=lambda call: True)
+    def tg_callback(call):
+        data = call.data
+        if data.startswith('menu_'):
+            handle_menu_callback(call)
+        elif data.startswith('point_'):
+            handle_point_callback(call)
+        elif data.startswith('confirm_'):
+            handle_confirm_callback(call)
+        elif data.startswith('admin_'):
+            handle_admin_callback(call)
+        elif data.startswith('view_'):
+            view_request(call)
+        elif data.startswith('take_'):
+            take_to_work(call)
+        elif data.startswith(('guilty_', 'not_guilty_', 'approved_', 'rejected_')):
+            change_status(call)
+        elif data.startswith('appeal_'):
+            add_appeal(call)
+        elif data.startswith('comment_'):
+            add_comment(call)
+        elif data.startswith('history_'):
+            show_history(call)
+        elif data.startswith('remind_'):
+            set_reminder(call)
+        elif data == 'admin_back':
+            admin_back(call)
+        else:
+            answer_callback(call, "Неизвестная команда")
 
-        @tg_bot.message_handler(content_types=['text'])
-        def tg_text(message):
-            chat_id = message.chat.id
-            if message.text.startswith('/add_admin'):
-                handle_add_admin_command(message, chat_id)
-            else:
-                handle_text_message(message)
+    @tg_bot.message_handler(content_types=['text'])
+    def tg_text(message):
+        chat_id = message.chat.id
+        if message.text.startswith('/add_admin'):
+            handle_add_admin_command(message, chat_id)
+        else:
+            handle_text_message(message)
 
-        @tg_bot.message_handler(content_types=['photo'])
-        def tg_photo(message):
-            handle_photo_message_global(message)
-
-    if max_bot:
-        @max_bot.message_handler(commands=['start'])
-        def max_start(message):
-            logger.info(f"MAX start от {message.from_user.id}")
-            show_main_menu(message.chat.id, message.from_user.id)
-
-        @max_bot.callback_query_handler(func=lambda call: True)
-        def max_callback(call):
-            data = call.data
-            if data.startswith('menu_'):
-                handle_menu_callback(call)
-            elif data.startswith('point_'):
-                handle_point_callback(call)
-            elif data.startswith('confirm_'):
-                handle_confirm_callback(call)
-            elif data.startswith('admin_'):
-                handle_admin_callback(call)
-            elif data.startswith('view_'):
-                view_request(call)
-            elif data.startswith('take_'):
-                take_to_work(call)
-            elif data.startswith(('guilty_', 'not_guilty_', 'approved_', 'rejected_')):
-                change_status(call)
-            elif data.startswith('appeal_'):
-                add_appeal(call)
-            elif data.startswith('comment_'):
-                add_comment(call)
-            elif data.startswith('history_'):
-                show_history(call)
-            elif data.startswith('remind_'):
-                set_reminder(call)
-            elif data == 'admin_back':
-                admin_back(call)
-            else:
-                answer_callback(call, "Неизвестная команда")
-
-        @max_bot.message_handler(content_types=['text'])
-        def max_text(message):
-            chat_id = message.chat.id
-            if message.text.startswith('/add_admin'):
-                handle_add_admin_command(message, chat_id)
-            else:
-                handle_text_message(message)
-
-        @max_bot.message_handler(content_types=['photo'])
-        def max_photo(message):
-            handle_photo_message_global(message)
-
+    @tg_bot.message_handler(content_types=['photo'])
+    def tg_photo(message):
+        handle_photo_message_global(message)
 # ---------------------------------------------------------------------
 # ФОНОВАЯ ЗАДАЧА НАПОМИНАНИЙ
 # ---------------------------------------------------------------------
@@ -1026,36 +947,33 @@ def start_reminder_thread():
     logger.info("Напоминания запущены")
 
 # ---------------------------------------------------------------------
-# ЗАПУСК БОТОВ С ПЕРЕЗАПУСКОМ ПРИ ПАДЕНИИ
+# ЗАПУСК БОТА
 # ---------------------------------------------------------------------
 def run_tg():
+    print("🟢 Telegram бот запущен", flush=True)
     while True:
         try:
-            if tg_bot:
-                logger.info("🟢 Telegram бот запущен")
-                tg_bot.polling(none_stop=True, interval=0)
+            tg_bot.polling(none_stop=True, interval=0)
         except Exception as e:
+            print(f"❌ Telegram polling упал: {e}", flush=True)
             logger.error(f"Telegram polling упал: {e}")
-            time.sleep(5)  # ждём перед перезапуском
-            continue
-
-def run_max():
-    while True:
-        try:
-            if max_bot:
-                logger.info("🟢 MAX бот запущен")
-                if hasattr(max_bot, 'start_polling'):
-                    max_bot.start_polling()
-                elif hasattr(max_bot, 'polling'):
-                    max_bot.polling(none_stop=True)
-                else:
-                    logger.error("MAX: нет метода polling/start_polling")
-                    time.sleep(60)
-        except Exception as e:
-            logger.error(f"MAX polling упал: {e}")
             time.sleep(5)
-            continue
 
+if __name__ == "__main__":
+    print("=" * 50, flush=True)
+    print("🤖 TELEGRAM БОТ ЗАПУЩЕН на Render", flush=True)
+    print("=" * 50, flush=True)
+    settings = load_settings()
+    print(f"🏢 Точки: {', '.join(settings.get('points', []))}", flush=True)
+    print(f"👤 Админов: {len(settings['admin_ids'])}", flush=True)
+    for adm in settings['admin_ids']:
+        print(f"  • {adm.get('name')} (ID: {adm['id']}) - точки: {', '.join(adm.get('points', []))}", flush=True)
+
+    setup_handlers()
+    start_reminder_thread()
+    
+    # Запускаем бота в основном потоке
+    run_tg()
 # ---------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------
