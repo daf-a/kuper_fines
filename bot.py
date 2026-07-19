@@ -1,37 +1,58 @@
-import telebot
-import json
 import os
-from datetime import datetime, timedelta
 import threading
 import time
+import json
+from datetime import datetime, timedelta
+from flask import Flask, jsonify
+import telebot
+from telebot import types as tg_types
 
-# Пытаемся импортировать umaxbot (библиотека для MAX)
+# Пытаемся импортировать umaxbot (для MAX)
 try:
     from maxbot import Client as MaxClient
 except ImportError:
     MaxClient = None
 
-from telebot import types as tg_types
-
 # ============================================
-# НАСТРОЙКИ (токены из переменных окружения)
+# ТОКЕНЫ (из переменных окружения Render)
 # ============================================
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 MAX_TOKEN = os.getenv('MAX_TOKEN')
 
 if not TELEGRAM_TOKEN and not MAX_TOKEN:
-    raise ValueError("Не заданы токены! Установите TELEGRAM_TOKEN и/или MAX_TOKEN.")
+    raise ValueError("Задайте TELEGRAM_TOKEN или MAX_TOKEN")
 
-# Создаём ботов
+# Создаём ботов (каждый только один раз)
 tg_bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 max_bot = MaxClient(MAX_TOKEN) if (MAX_TOKEN and MaxClient) else None
 
-# Файлы для хранения данных
+# ============================================
+# ВЕБ-СЕРВЕР ДЛЯ RENDER (health check)
+# ============================================
+
+app = Flask(__name__)
+
+@app.route('/')
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok", "bot": "running"}), 200
+
+def run_web():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# Запускаем веб-сервер в отдельном потоке (чтобы не блокировать бота)
+web_thread = threading.Thread(target=run_web, daemon=True)
+web_thread.start()
+
+# ============================================
+# ФАЙЛЫ ДАННЫХ
+# ============================================
+
 REQUESTS_FILE = 'requests.json'
 SETTINGS_FILE = 'settings.json'
 
-# Статусы заявок
 STATUSES = {
     'queue': {'name': 'В очереди', 'emoji': '⏳'},
     'work': {'name': 'В работе', 'emoji': '🔄'},
@@ -71,7 +92,6 @@ def save_settings(settings):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
 
-# Временные данные пользователей
 user_data = {}
 
 # ============================================
@@ -1269,15 +1289,12 @@ def run_max():
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("🤖 БОТ ЗАПУЩЕН (Telegram + MAX)")
+    print("🤖 БОТ ЗАПУЩЕН (Telegram + MAX) на Render")
     print("=" * 50)
     settings = load_settings()
     print(f"🏢 Точки: {', '.join(settings.get('points', []))}")
     print(f"👤 Админов: {len(settings['admin_ids'])}")
-    for adm in settings['admin_ids']:
-        print(f"  • {adm.get('name')} (ID: {adm['id']}) - точки: {', '.join(adm.get('points', []))}")
-    start_reminder_thread()
-    # Запускаем в потоках
+    # Запускаем ботов в отдельных потоках
     t1 = threading.Thread(target=run_tg)
     t2 = threading.Thread(target=run_max)
     t1.start()
