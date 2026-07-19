@@ -3,6 +3,7 @@ import threading
 import time
 import json
 import logging
+import sys
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 
@@ -10,14 +11,18 @@ from flask import Flask, jsonify
 import telebot
 from telebot import types as tg_types
 
-# Для MAX — используем правильный импорт
+# Для MAX
 try:
     from maxbot import Client as MaxClient
 except ImportError:
     MaxClient = None
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
@@ -55,7 +60,7 @@ def run_web():
 
 web_thread = threading.Thread(target=run_web, daemon=True)
 web_thread.start()
-time.sleep(2)  # Даём серверу время запуститься
+time.sleep(2)
 logger.info("Flask-сервер запущен")
 
 # ---------------------------------------------------------------------
@@ -103,7 +108,7 @@ def save_settings(settings):
         json.dump(settings, f, ensure_ascii=False, indent=2)
 
 # ---------------------------------------------------------------------
-# АДМИНЫ ПО УМОЛЧАНИЮ — ПРОПИШИТЕ СВОЙ ID ЗДЕСЬ
+# АДМИНЫ ПО УМОЛЧАНИЮ
 # ---------------------------------------------------------------------
 DEFAULT_ADMINS = [
     {'id': 995419713, 'points': ['Ашан, Химки', 'Metro, Черная Грязь'], 'name': 'Даша'},
@@ -245,7 +250,7 @@ def handle_menu_callback(call):
             admin_panel(chat_id)
         else:
             send_message(chat_id, "⛔ Нет доступа.")
-    answer_callback(call)   # ← ВАЖНО: закрываем callback
+    answer_callback(call)
     
 # ---------------------------------------------------------------------
 # ВСЕ ОБРАБОТЧИКИ (ЗАЯВКИ, АДМИНКА, СТАТУСЫ)
