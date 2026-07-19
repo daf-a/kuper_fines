@@ -2,35 +2,38 @@ import os
 import threading
 import time
 import json
+import logging
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
+
+# Для Telegram
 import telebot
 from telebot import types as tg_types
 
-# Пытаемся импортировать umaxbot (для MAX)
+# Для MAX
 try:
     from maxbot import Client as MaxClient
 except ImportError:
     MaxClient = None
 
-# ============================================
-# ТОКЕНЫ (из переменных окружения Render)
-# ============================================
+# ---------------------------------------------------------------------
+# НАСТРОЙКИ
+# ---------------------------------------------------------------------
 
+# Загружаем токены из переменных окружения (Render)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 MAX_TOKEN = os.getenv('MAX_TOKEN')
 
 if not TELEGRAM_TOKEN and not MAX_TOKEN:
     raise ValueError("Задайте TELEGRAM_TOKEN или MAX_TOKEN")
 
-# Создаём ботов (каждый только один раз)
+# Создаём экземпляры ботов (если токен есть)
 tg_bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 max_bot = MaxClient(MAX_TOKEN) if (MAX_TOKEN and MaxClient) else None
 
-# ============================================
-# ВЕБ-СЕРВЕР ДЛЯ RENDER (health check)
-# ============================================
-
+# ---------------------------------------------------------------------
+# WEB-СЕРВЕР ДЛЯ RENDER (health check)
+# ---------------------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
@@ -42,14 +45,12 @@ def run_web():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
-# Запускаем веб-сервер в отдельном потоке (чтобы не блокировать бота)
 web_thread = threading.Thread(target=run_web, daemon=True)
 web_thread.start()
 
-# ============================================
+# ---------------------------------------------------------------------
 # ФАЙЛЫ ДАННЫХ
-# ============================================
-
+# ---------------------------------------------------------------------
 REQUESTS_FILE = 'requests.json'
 SETTINGS_FILE = 'settings.json'
 
@@ -62,10 +63,9 @@ STATUSES = {
     'rejected': {'name': 'Не согласовано', 'emoji': '⚫'}
 }
 
-# ============================================
+# ---------------------------------------------------------------------
 # РАБОТА С ФАЙЛАМИ
-# ============================================
-
+# ---------------------------------------------------------------------
 def load_requests():
     if os.path.exists(REQUESTS_FILE):
         with open(REQUESTS_FILE, 'r', encoding='utf-8') as f:
@@ -80,8 +80,9 @@ def load_settings():
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
+    # Настройки по умолчанию (сразу добавляем админов из DEFAULT_ADMINS)
     default_settings = {
-        'admin_ids': [],
+        'admin_ids': DEFAULT_ADMINS,  # заранее заданные админы
         'reminder_time': '09:00',
         'points': ['Точка А', 'Точка Б']
     }
@@ -92,11 +93,19 @@ def save_settings(settings):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
 
-user_data = {}
+# ---------------------------------------------------------------------
+# АДМИНЫ ПО УМОЛЧАНИЮ — ПРОПИШИТЕ СВОИ ID ЗДЕСЬ
+# ---------------------------------------------------------------------
+# Формат: [{'id': 123456789, 'points': ['Точка А', 'Точка Б'], 'name': 'Имя'}]
+DEFAULT_ADMINS = [
+    {'id': 123456789, 'points': ['Точка А', 'Точка Б'], 'name': 'Админ 1'},  # ЗАМЕНИТЕ НА СВОЙ ID
+    # Добавьте других админов по необходимости
+]
 
-# ============================================
-# ОБЩИЕ ФУНКЦИИ (не зависят от платформы)
-# ============================================
+# ---------------------------------------------------------------------
+# ОБЩИЕ ФУНКЦИИ
+# ---------------------------------------------------------------------
+user_data = {}
 
 def is_admin(user_id):
     settings = load_settings()
@@ -122,26 +131,14 @@ def get_admin_name(user_id):
     for admin in settings['admin_ids']:
         if admin['id'] == user_id:
             return admin.get('name', f"Админ {user_id}")
-    try:
-        if tg_bot:
+    # Если не нашли, пытаемся получить через Telegram
+    if tg_bot:
+        try:
             user = tg_bot.get_chat(user_id)
             return user.first_name or user.username or str(user_id)
-    except:
-        pass
+        except:
+            pass
     return str(user_id)
-
-def get_admin_by_point(point):
-    settings = load_settings()
-    admins = []
-    for admin in settings['admin_ids']:
-        if point in admin.get('points', []):
-            admins.append(admin['id'])
-    return admins
-
-def can_admin_view_request(admin_id, request):
-    if is_super_admin(admin_id):
-        return True
-    return request.get('point') in get_admin_points(admin_id)
 
 def get_available_requests(admin_id):
     requests = load_requests()
@@ -150,10 +147,14 @@ def get_available_requests(admin_id):
     points = get_admin_points(admin_id)
     return [r for r in requests if r.get('point') in points]
 
-# ============================================
-# ФУНКЦИИ ОТПРАВКИ СООБЩЕНИЙ (адаптеры)
-# ============================================
+def can_admin_view_request(admin_id, request):
+    if is_super_admin(admin_id):
+        return True
+    return request.get('point') in get_admin_points(admin_id)
 
+# ---------------------------------------------------------------------
+# АДАПТЕРЫ ОТПРАВКИ СООБЩЕНИЙ (для обоих платформ)
+# ---------------------------------------------------------------------
 def send_message(chat_id, text, reply_markup=None, parse_mode='HTML'):
     if tg_bot:
         try:
@@ -203,37 +204,9 @@ def answer_callback(call, text=None, show_alert=False):
         except Exception as e:
             print(f"MAX answer error: {e}")
 
-# ============================================
-# ОБРАБОТЧИКИ ДЛЯ ОБОИХ ПЛАТФОРМ (декораторы)
-# ============================================
-
-# Регистрируем обработчики для Telegram
-def tg_handler(message_handler_func):
-    if tg_bot:
-        tg_bot.message_handler()(message_handler_func)
-    return message_handler_func
-
-def tg_callback_handler(callback_func):
-    if tg_bot:
-        tg_bot.callback_query_handler(func=lambda call: True)(callback_func)
-    return callback_func
-
-# Регистрируем обработчики для MAX
-def max_handler(message_handler_func):
-    if max_bot:
-        max_bot.message_handler()(message_handler_func)
-    return message_handler_func
-
-def max_callback_handler(callback_func):
-    if max_bot:
-        max_bot.callback_query_handler(func=lambda call: True)(callback_func)
-    return callback_func
-
-# ============================================
-# ОБЩИЕ ОБРАБОТЧИКИ (вызываются из декораторов)
-# ============================================
-
-# --- Главное меню ---
+# ---------------------------------------------------------------------
+# ГЛАВНОЕ МЕНЮ
+# ---------------------------------------------------------------------
 def show_main_menu(chat_id, user_id):
     markup = tg_types.InlineKeyboardMarkup()
     btn1 = tg_types.InlineKeyboardButton("📝 Подать заявку", callback_data="menu_new")
@@ -247,43 +220,10 @@ def show_main_menu(chat_id, user_id):
         markup.row(btn5)
     send_message(chat_id, "👋 Привет! Выберите действие:", reply_markup=markup)
 
-# --- Обработка колбэков главного меню ---
-def handle_menu_callback(call):
-    chat_id = call.message.chat.id
-    data = call.data
-    if data == "menu_new":
-        show_point_selection(chat_id)
-    elif data == "menu_my":
-        show_my_requests(chat_id)
-    elif data == "menu_help":
-        help_text = (
-            "📖 Инструкция:\n\n"
-            "1. Нажмите 'Подать заявку'\n"
-            "2. Выберите точку\n"
-            "3. Введите ваше ФИО\n"
-            "4. Отправьте фото штрафа\n"
-            "5. Введите дату штрафа (ДД.ММ.ГГГГ)\n\n"
-            "📊 Статусы:\n"
-            "⏳ В очереди\n"
-            "🔄 В работе\n"
-            "🔴 Виновен\n"
-            "🟡 Не виновен (на согласовании)\n"
-            "🟢 Согласовано\n"
-            "⚫ Не согласовано"
-        )
-        send_message(chat_id, help_text)
-        answer_callback(call)
-    elif data == "menu_example":
-        show_example_request(chat_id)
-        answer_callback(call)
-    elif data == "menu_admin":
-        if is_admin(chat_id):
-            admin_panel(chat_id)
-        else:
-            send_message(chat_id, "⛔ У вас нет доступа.")
-        answer_callback(call)
+# ---------------------------------------------------------------------
+# ВСЕ ОБРАБОТЧИКИ (ЗАЯВКИ, АДМИНКА, СТАТУСЫ)
+# ---------------------------------------------------------------------
 
-# --- Выбор точки ---
 def show_point_selection(chat_id):
     settings = load_settings()
     points = settings.get('points', ['Точка А', 'Точка Б'])
@@ -300,7 +240,6 @@ def handle_point_callback(call):
     edit_message_text(f"✅ Выбрана точка: {point}\n\n👤 Введите ваше ФИО полностью:", chat_id, call.message.message_id)
     answer_callback(call)
 
-# --- Процесс создания заявки (текстовые сообщения) ---
 def process_request_creation(chat_id, text):
     if chat_id not in user_data:
         return
@@ -331,11 +270,10 @@ def process_request_creation(chat_id, text):
         except ValueError:
             send_message(chat_id, "❌ Неверный формат! Используйте ДД.ММ.ГГГГ (например, 15.05.2026)")
 
-# --- Обработка фото ---
 def handle_photo_message(message):
     chat_id = message.chat.id
     if chat_id in user_data and user_data[chat_id].get('step') == 'photo':
-        # Получаем file_id (универсально)
+        # Получаем file_id
         if hasattr(message, 'photo'):
             file_id = message.photo[-1].file_id
         else:
@@ -349,7 +287,6 @@ def handle_photo_message(message):
     else:
         send_message(chat_id, "❌ Сейчас не требуется фото. Нажмите 'Подать заявку'.")
 
-# --- Подтверждение заявки ---
 def handle_confirm_callback(call):
     chat_id = call.message.chat.id
     data = call.data
@@ -403,7 +340,6 @@ def handle_confirm_callback(call):
         show_point_selection(chat_id)
         answer_callback(call)
 
-# --- Уведомление админов ---
 def notify_admins_for_point(request):
     settings = load_settings()
     point = request.get('point')
@@ -427,7 +363,6 @@ def notify_admins_for_point(request):
             markup.add(btn)
             send_photo(admin_id, request['photo_id'], caption=caption, reply_markup=markup)
 
-# --- Мои заявки ---
 def show_my_requests(chat_id):
     requests = load_requests()
     user_requests = [r for r in requests if r['user_id'] == chat_id]
@@ -446,7 +381,6 @@ def show_my_requests(chat_id):
         text += f"   Создана: {req['created_at']}\n\n"
     send_message(chat_id, text)
 
-# --- Пример заявки ---
 def show_example_request(chat_id):
     example_text = (
         "📝 **ПРИМЕР ЗАЯВКИ**\n\n"
@@ -460,7 +394,6 @@ def show_example_request(chat_id):
     )
     send_message(chat_id, example_text, parse_mode='HTML')
 
-# --- Админ-панель ---
 def admin_panel(chat_id):
     if not is_admin(chat_id):
         send_message(chat_id, "⛔ У вас нет доступа.")
@@ -528,7 +461,6 @@ def show_requests_list(chat_id, requests, title):
         markup.add(btn)
     send_message(chat_id, f"📋 {title} ({len(requests)} шт.):", reply_markup=markup)
 
-# --- Просмотр заявки ---
 def view_request(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -591,7 +523,6 @@ def view_request(call):
     send_message(chat_id, "Выберите действие:", reply_markup=markup)
     answer_callback(call)
 
-# --- Взять в работу ---
 def take_to_work(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -617,7 +548,6 @@ def take_to_work(call):
     edit_message_text(f"✅ Заявка №{req_id} взята в работу!\n👤 Админ: {admin_name}", chat_id, call.message.message_id)
     answer_callback(call)
 
-# --- Изменение статуса (guilty, not_guilty, approved, rejected) ---
 def change_status(call):
     chat_id = call.message.chat.id
     if not is_admin(chat_id):
@@ -630,7 +560,6 @@ def change_status(call):
     if not req:
         answer_callback(call, "❌ Не найдена", True)
         return
-    # Проверки
     if action == 'guilty' and req['status'] != 'work':
         answer_callback(call, "❌ Сначала возьмите в работу", True)
         return
@@ -645,7 +574,6 @@ def change_status(call):
         return
 
     if action == 'not_guilty':
-        # Запрашиваем номер штрафа
         user_data[chat_id] = {'action': 'add_penalty_number', 'req_id': req_id}
         send_message(chat_id, f"✍️ Введите НОМЕР ШТРАФА для заявки №{req_id} (только для админов):")
         answer_callback(call)
@@ -669,7 +597,6 @@ def change_status(call):
     edit_message_text(f"✅ Статус заявки №{req_id} изменён на {status_info['emoji']} {status_info['name']}", chat_id, call.message.message_id)
     answer_callback(call)
 
-# --- Добавление номера штрафа ---
 def add_penalty_number(message):
     chat_id = message.chat.id
     if chat_id not in user_data or user_data[chat_id].get('action') != 'add_penalty_number':
@@ -700,7 +627,6 @@ def add_penalty_number(message):
     send_message(req['user_id'], f"📊 Ваша заявка №{req_id} отправлена на согласование! Статус: 🟡 Не виновен")
     del user_data[chat_id]
 
-# --- Текст оспаривания ---
 def add_appeal(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -744,7 +670,6 @@ def add_appeal_text(message):
     send_message(req['user_id'], f"✍️ По вашей заявке №{req_id} добавлен текст оспаривания:\n\n{appeal_text}")
     del user_data[chat_id]
 
-# --- Комментарий ---
 def add_comment(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -778,7 +703,6 @@ def add_comment_text(message):
     send_message(req['user_id'], f"💬 Администратор {admin_name} оставил комментарий к вашей заявке №{req_id}:\n\n{comment_text}")
     del user_data[chat_id]
 
-# --- История ---
 def show_history(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -811,7 +735,6 @@ def show_history(call):
     send_message(chat_id, text)
     answer_callback(call)
 
-# --- Напомнить через день ---
 def set_reminder(call):
     chat_id = call.message.chat.id
     req_id = int(call.data.split('_')[1])
@@ -829,7 +752,6 @@ def set_reminder(call):
     send_message(chat_id, f"⏰ Напоминание для заявки №{req_id} установлено на завтра.")
     answer_callback(call)
 
-# --- Напоминания (список) ---
 def show_reminders(chat_id):
     available = get_available_requests(chat_id)
     today = datetime.now().strftime('%Y-%m-%d')
@@ -846,7 +768,6 @@ def show_reminders(chat_id):
         markup.add(btn)
     send_message(chat_id, f"⏰ НАПОМИНАНИЯ НА СЕГОДНЯ ({len(reminders)} шт.):", reply_markup=markup)
 
-# --- Статистика ---
 def show_stats(chat_id):
     available = get_available_requests(chat_id)
     total = len(available)
@@ -865,7 +786,6 @@ def show_stats(chat_id):
         text += f"{v['emoji']} {v['name']}: {count}\n"
     send_message(chat_id, text)
 
-# --- Настройки ---
 def show_settings(chat_id):
     settings = load_settings()
     text = "⚙️ НАСТРОЙКИ\n━━━━━━━━━━━━━━━━━━\n"
@@ -885,12 +805,13 @@ def show_settings(chat_id):
     text += "/set_time <HH:MM>"
     send_message(chat_id, text)
 
-# --- Назад в админ-панель ---
 def admin_back(call):
     admin_panel(call.message.chat.id)
     answer_callback(call)
 
-# --- Обработка текстовых сообщений (ввод данных) ---
+# ---------------------------------------------------------------------
+# ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ И ФОТО
+# ---------------------------------------------------------------------
 def handle_text_message(message):
     chat_id = message.chat.id
     if chat_id in user_data:
@@ -904,17 +825,67 @@ def handle_text_message(message):
         else:
             process_request_creation(chat_id, message.text)
     else:
-        # Если сообщение не в процессе создания, предлагаем меню
+        # Если не в процессе, показываем главное меню
         show_main_menu(chat_id, chat_id)
 
-# --- Обработка фото ---
 def handle_photo_message_global(message):
     handle_photo_message(message)
 
-# ============================================
-# РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ДЛЯ TELEGRAM
-# ============================================
+# ---------------------------------------------------------------------
+# КОМАНДА /add_admin
+# ---------------------------------------------------------------------
+def handle_add_admin_command(message, user_id):
+    # Проверка: если пользователь не админ и в списке уже есть другие админы, запрещаем.
+    # Если админов ещё нет, разрешаем добавить первого.
+    settings = load_settings()
+    if is_admin(user_id):
+        pass  # разрешено
+    elif len(settings['admin_ids']) == 0:
+        # админов нет, разрешаем
+        pass
+    else:
+        send_message(message.chat.id, "⛔ У вас нет прав для добавления админов.")
+        return
 
+    try:
+        parts = message.text.split(' ', 3)
+        if len(parts) < 3:
+            send_message(message.chat.id,
+                         "❌ Использование: /add_admin <ID> <Точки> <Имя>\n"
+                         "Пример: /add_admin 123456789 Точка А,Точка Б Иван Иванов")
+            return
+        new_id = int(parts[1])
+        points = [p.strip() for p in parts[2].split(',')]
+        name = parts[3] if len(parts) > 3 else f"Админ {new_id}"
+        # Проверяем, что точки существуют
+        available_points = settings.get('points', [])
+        for p in points:
+            if p not in available_points:
+                send_message(message.chat.id, f"❌ Точка '{p}' не найдена. Доступные: {', '.join(available_points)}")
+                return
+        # Проверяем, есть ли уже такой админ
+        for adm in settings['admin_ids']:
+            if adm['id'] == new_id:
+                adm['points'] = points
+                adm['name'] = name
+                save_settings(settings)
+                send_message(message.chat.id, f"✅ Админ {new_id} обновлён.")
+                return
+        # Добавляем нового
+        settings['admin_ids'].append({'id': new_id, 'points': points, 'name': name})
+        save_settings(settings)
+        send_message(message.chat.id, f"✅ Админ добавлен: {name} (ID: {new_id})")
+        # Уведомляем нового админа
+        try:
+            send_message(new_id, f"👑 Вы назначены администратором!\nТочки: {', '.join(points)}")
+        except:
+            pass
+    except Exception as e:
+        send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+# ---------------------------------------------------------------------
+# РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ДЛЯ TELEGRAM
+# ---------------------------------------------------------------------
 if tg_bot:
     @tg_bot.message_handler(commands=['start'])
     def tg_start(message):
@@ -952,128 +923,30 @@ if tg_bot:
 
     @tg_bot.message_handler(content_types=['text'])
     def tg_text(message):
+        chat_id = message.chat.id
+        # Проверяем, не команда ли это
+        if message.text.startswith('/add_admin'):
+            handle_add_admin_command(message, chat_id)
+            return
+        if message.text.startswith('/remove_admin'):
+            # Обработка команды удаления админа (можно добавить)
+            pass
+        if message.text.startswith('/add_point'):
+            # Обработка добавления точки
+            pass
+        if message.text.startswith('/remove_point'):
+            pass
+        if message.text.startswith('/set_time'):
+            pass
         handle_text_message(message)
 
     @tg_bot.message_handler(content_types=['photo'])
     def tg_photo(message):
         handle_photo_message_global(message)
 
-    # Команды управления админами (для Telegram)
-    @tg_bot.message_handler(commands=['add_admin'])
-    def tg_add_admin(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            parts = message.text.split(' ', 3)
-            if len(parts) < 3:
-                send_message(chat_id, "❌ Использование: /add_admin <ID> <Точки> <Имя>\nПример: /add_admin 123456789 Точка А,Точка Б Иван Иванов")
-                return
-            new_id = int(parts[1])
-            points = [p.strip() for p in parts[2].split(',')]
-            name = parts[3] if len(parts) > 3 else f"Админ {new_id}"
-            settings = load_settings()
-            for p in points:
-                if p not in settings.get('points', []):
-                    send_message(chat_id, f"❌ Точка '{p}' не найдена. Доступные: {', '.join(settings.get('points', []))}")
-                    return
-            # Проверяем, существует ли уже
-            for adm in settings['admin_ids']:
-                if adm['id'] == new_id:
-                    adm['points'] = points
-                    adm['name'] = name
-                    save_settings(settings)
-                    send_message(chat_id, f"✅ Админ {new_id} обновлён.")
-                    return
-            settings['admin_ids'].append({'id': new_id, 'points': points, 'name': name})
-            save_settings(settings)
-            send_message(chat_id, f"✅ Админ добавлен: {name} (ID: {new_id})")
-            try:
-                send_message(new_id, f"👑 Вы назначены администратором!\nТочки: {', '.join(points)}")
-            except:
-                pass
-        except Exception as e:
-            send_message(chat_id, f"❌ Ошибка: {e}")
-
-    @tg_bot.message_handler(commands=['remove_admin'])
-    def tg_remove_admin(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            rem_id = int(message.text.split()[1])
-            if rem_id == chat_id:
-                send_message(chat_id, "❌ Нельзя удалить себя")
-                return
-            settings = load_settings()
-            for adm in settings['admin_ids']:
-                if adm['id'] == rem_id:
-                    settings['admin_ids'].remove(adm)
-                    save_settings(settings)
-                    send_message(chat_id, f"✅ Админ {rem_id} удалён")
-                    return
-            send_message(chat_id, "ℹ️ Админ не найден")
-        except:
-            send_message(chat_id, "❌ Использование: /remove_admin <ID>")
-
-    @tg_bot.message_handler(commands=['add_point'])
-    def tg_add_point(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            point = message.text.split(' ', 1)[1].strip()
-            settings = load_settings()
-            if point not in settings.get('points', []):
-                settings['points'].append(point)
-                save_settings(settings)
-                send_message(chat_id, f"✅ Точка '{point}' добавлена")
-            else:
-                send_message(chat_id, f"ℹ️ Точка '{point}' уже есть")
-        except:
-            send_message(chat_id, "❌ Использование: /add_point <Название>")
-
-    @tg_bot.message_handler(commands=['remove_point'])
-    def tg_remove_point(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            point = message.text.split(' ', 1)[1].strip()
-            settings = load_settings()
-            if point in settings.get('points', []):
-                settings['points'].remove(point)
-                save_settings(settings)
-                send_message(chat_id, f"✅ Точка '{point}' удалена")
-            else:
-                send_message(chat_id, f"ℹ️ Точка '{point}' не найдена")
-        except:
-            send_message(chat_id, "❌ Использование: /remove_point <Название>")
-
-    @tg_bot.message_handler(commands=['set_time'])
-    def tg_set_time(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            t = message.text.split()[1]
-            datetime.strptime(t, '%H:%M')
-            settings = load_settings()
-            settings['reminder_time'] = t
-            save_settings(settings)
-            send_message(chat_id, f"✅ Время напоминаний: {t}")
-        except:
-            send_message(chat_id, "❌ Использование: /set_time <HH:MM>")
-
-# ============================================
+# ---------------------------------------------------------------------
 # РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ДЛЯ MAX
-# ============================================
-
+# ---------------------------------------------------------------------
 if max_bot:
     @max_bot.message_handler(commands=['start'])
     def max_start(message):
@@ -1111,127 +984,19 @@ if max_bot:
 
     @max_bot.message_handler(content_types=['text'])
     def max_text(message):
+        chat_id = message.chat.id
+        if message.text.startswith('/add_admin'):
+            handle_add_admin_command(message, chat_id)
+            return
         handle_text_message(message)
 
     @max_bot.message_handler(content_types=['photo'])
     def max_photo(message):
         handle_photo_message_global(message)
 
-    # Команды управления для MAX (аналогично Telegram)
-    @max_bot.message_handler(commands=['add_admin'])
-    def max_add_admin(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            parts = message.text.split(' ', 3)
-            if len(parts) < 3:
-                send_message(chat_id, "❌ Использование: /add_admin <ID> <Точки> <Имя>")
-                return
-            new_id = int(parts[1])
-            points = [p.strip() for p in parts[2].split(',')]
-            name = parts[3] if len(parts) > 3 else f"Админ {new_id}"
-            settings = load_settings()
-            for p in points:
-                if p not in settings.get('points', []):
-                    send_message(chat_id, f"❌ Точка '{p}' не найдена.")
-                    return
-            for adm in settings['admin_ids']:
-                if adm['id'] == new_id:
-                    adm['points'] = points
-                    adm['name'] = name
-                    save_settings(settings)
-                    send_message(chat_id, f"✅ Админ {new_id} обновлён.")
-                    return
-            settings['admin_ids'].append({'id': new_id, 'points': points, 'name': name})
-            save_settings(settings)
-            send_message(chat_id, f"✅ Админ добавлен: {name} (ID: {new_id})")
-            try:
-                send_message(new_id, f"👑 Вы назначены администратором!\nТочки: {', '.join(points)}")
-            except:
-                pass
-        except Exception as e:
-            send_message(chat_id, f"❌ Ошибка: {e}")
-
-    @max_bot.message_handler(commands=['remove_admin'])
-    def max_remove_admin(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            rem_id = int(message.text.split()[1])
-            if rem_id == chat_id:
-                send_message(chat_id, "❌ Нельзя удалить себя")
-                return
-            settings = load_settings()
-            for adm in settings['admin_ids']:
-                if adm['id'] == rem_id:
-                    settings['admin_ids'].remove(adm)
-                    save_settings(settings)
-                    send_message(chat_id, f"✅ Админ {rem_id} удалён")
-                    return
-            send_message(chat_id, "ℹ️ Админ не найден")
-        except:
-            send_message(chat_id, "❌ Использование: /remove_admin <ID>")
-
-    @max_bot.message_handler(commands=['add_point'])
-    def max_add_point(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            point = message.text.split(' ', 1)[1].strip()
-            settings = load_settings()
-            if point not in settings.get('points', []):
-                settings['points'].append(point)
-                save_settings(settings)
-                send_message(chat_id, f"✅ Точка '{point}' добавлена")
-            else:
-                send_message(chat_id, f"ℹ️ Точка '{point}' уже есть")
-        except:
-            send_message(chat_id, "❌ Использование: /add_point <Название>")
-
-    @max_bot.message_handler(commands=['remove_point'])
-    def max_remove_point(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            point = message.text.split(' ', 1)[1].strip()
-            settings = load_settings()
-            if point in settings.get('points', []):
-                settings['points'].remove(point)
-                save_settings(settings)
-                send_message(chat_id, f"✅ Точка '{point}' удалена")
-            else:
-                send_message(chat_id, f"ℹ️ Точка '{point}' не найдена")
-        except:
-            send_message(chat_id, "❌ Использование: /remove_point <Название>")
-
-    @max_bot.message_handler(commands=['set_time'])
-    def max_set_time(message):
-        chat_id = message.chat.id
-        if not is_admin(chat_id):
-            send_message(chat_id, "⛔ Нет прав")
-            return
-        try:
-            t = message.text.split()[1]
-            datetime.strptime(t, '%H:%M')
-            settings = load_settings()
-            settings['reminder_time'] = t
-            save_settings(settings)
-            send_message(chat_id, f"✅ Время напоминаний: {t}")
-        except:
-            send_message(chat_id, "❌ Использование: /set_time <HH:MM>")
-
-# ============================================
+# ---------------------------------------------------------------------
 # ФОНОВАЯ ЗАДАЧА НАПОМИНАНИЙ
-# ============================================
-
+# ---------------------------------------------------------------------
 def reminder_checker():
     while True:
         try:
@@ -1273,10 +1038,9 @@ def start_reminder_thread():
     t = threading.Thread(target=reminder_checker, daemon=True)
     t.start()
 
-# ============================================
+# ---------------------------------------------------------------------
 # ЗАПУСК БОТОВ
-# ============================================
-
+# ---------------------------------------------------------------------
 def run_tg():
     if tg_bot:
         print("🟢 Telegram бот запущен")
@@ -1294,7 +1058,9 @@ if __name__ == "__main__":
     settings = load_settings()
     print(f"🏢 Точки: {', '.join(settings.get('points', []))}")
     print(f"👤 Админов: {len(settings['admin_ids'])}")
-    # Запускаем ботов в отдельных потоках
+    for adm in settings['admin_ids']:
+        print(f"  • {adm.get('name')} (ID: {adm['id']}) - точки: {', '.join(adm.get('points', []))}")
+    start_reminder_thread()
     t1 = threading.Thread(target=run_tg)
     t2 = threading.Thread(target=run_max)
     t1.start()
